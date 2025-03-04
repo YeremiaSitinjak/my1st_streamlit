@@ -45,8 +45,7 @@ def preprocess_data(df):
 
 # Function to calculate missing value percentage
 def calculate_missing_percentage(df):
-    missing_percent = df.isnull().mean() * 100
-    return missing_percent
+    return (df.isnull().sum() / len(df)) * 100
 
 # Function to detect anomalies using different methods
 def detect_anomalies(df, method):
@@ -66,10 +65,15 @@ def detect_anomalies(df, method):
         df["anomaly_score"] = model.fit_predict(X)
 
     elif method == "DBSCAN":
-        min_samples = min(5, len(df) // 2)  # Adjust min_samples for small datasets
-        model = DBSCAN(eps=1.5, min_samples=min_samples)
-        labels = model.fit_predict(X)
-        df["anomaly_score"] = labels
+        min_samples = max(2, min(5, len(df) // 2))  # Adjust min_samples dynamically
+        X_dbscan = df[['log distance [m]', 'depth [%]']].dropna()  # Use only two features
+        X_dbscan = StandardScaler().fit_transform(X_dbscan)  # Ensure scaling
+
+        model = DBSCAN(eps=1.2, min_samples=min_samples)
+        labels = model.fit_predict(X_dbscan)
+
+        df["anomaly_score"] = -1  # Default to normal
+        df.loc[df.index[:len(labels)], "anomaly_score"] = labels  # Assign computed labels
         df["Anomaly"] = df["anomaly_score"].apply(lambda x: "Yes" if x == -1 else "No")
         return df  # Return early as DBSCAN uses different labeling
 
