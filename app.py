@@ -49,7 +49,7 @@ def calculate_missing_percentage(df):
 
 # Function to detect anomalies using different methods
 def detect_anomalies(df, method):
-    df = df.copy()  # Avoid modifying original DataFrame
+    df = df.copy()
     features = ["log distance [m]", "depth [%]", "clock orientation"]
 
     # Standardize features for consistency
@@ -65,24 +65,27 @@ def detect_anomalies(df, method):
         df["anomaly_score"] = model.fit_predict(X)
 
     elif method == "DBSCAN":
-        min_samples = max(2, min(5, len(df) // 2))  # Adjust min_samples dynamically
-        X_dbscan = df[['log distance [m]', 'depth [%]']].dropna()  # Use only two features
-        X_dbscan = StandardScaler().fit_transform(X_dbscan)  # Ensure scaling
+        if len(df) < 5:
+            st.warning("DBSCAN requires at least 5 data points. Try another method.")
+            df["Anomaly"] = "No"
+            return df  # Return without running DBSCAN
 
-        model = DBSCAN(eps=1.2, min_samples=min_samples)
+        min_samples = max(2, min(5, len(df) // 3))  # Reduce min_samples for Streamlit Cloud
+        X_dbscan = df[['log distance [m]', 'depth [%]']].dropna()  # Use fewer features
+        X_dbscan = StandardScaler().fit_transform(X_dbscan)  # Scale features
+
+        model = DBSCAN(eps=0.8, min_samples=min_samples)  # Reduce eps for smaller clusters
         labels = model.fit_predict(X_dbscan)
 
         df["anomaly_score"] = -1  # Default to normal
         df.loc[df.index[:len(labels)], "anomaly_score"] = labels  # Assign computed labels
         df["Anomaly"] = df["anomaly_score"].apply(lambda x: "Yes" if x == -1 else "No")
-        return df  # Return early as DBSCAN uses different labeling
+        return df
 
     elif method == "Z-Score":
         df["anomaly_score"] = np.abs(zscore(X)).max(axis=1) > 2.5  # Mark as anomaly if z-score > 2.5
 
-    # Convert anomaly score (-1 means anomaly)
     df["Anomaly"] = df["anomaly_score"].apply(lambda x: "Yes" if x == -1 else "No")
-    
     return df
 
 # Streamlit App UI
@@ -93,58 +96,42 @@ uploaded_files = st.file_uploader("Upload multiple Excel files", accept_multiple
 
 if uploaded_files:
     st.subheader("Uploaded Files Summary")
-
-    # Store processed data for anomaly detection
     historical_data = {}
-
     for uploaded_file in uploaded_files:
         file_name = uploaded_file.name
         year = "".join(filter(str.isdigit, file_name))  # Extract year from filename
-
         df = pd.read_excel(uploaded_file)
         df = preprocess_data(df)
+        historical_data[year] = df
 
-        # Show missing percentage
+# Show missing percentage
         missing_percentage = calculate_missing_percentage(df)
         st.write(f"**Missing Data Percentage for {file_name}**")
         st.write(missing_percentage)
 
-        # Store historical data
-        historical_data[year] = df
-
-    # If we have at least two years of data, analyze inconsistencies
     if len(historical_data) > 1:
         st.subheader("Anomaly Detection")
         years_sorted = sorted(historical_data.keys())
-
         latest_year = years_sorted[-1]
-        previous_year = years_sorted[-2]
-
         df_latest = historical_data[latest_year]
-        df_previous = historical_data[previous_year]
-
-        st.write(f"**Comparing {previous_year} → {latest_year} for inconsistencies**")
 
         # User selects anomaly detection method
         method = st.selectbox("Choose Anomaly Detection Method", ["Isolation Forest", "Local Outlier Factor", "DBSCAN", "Z-Score"])
 
-        # Run anomaly detection
-        anomalies_df = detect_anomalies(df_latest, method)
+        # Show loading spinner while detecting anomalies
+        with st.spinner(f"Running {method}... Please wait."):
+            anomalies_df = detect_anomalies(df_latest, method)
 
         # Show results in two columns
         col1, col2 = st.columns([3, 1])
-
         with col1:
-            st.write("**Anomaly Detection Results:**")
+            st.subheader("Anomaly Detection Results")
             st.dataframe(anomalies_df[["log distance [m]", "depth [%]", "clock orientation", "Anomaly"]])
-
         with col2:
-            # Calculate and show anomaly percentages
             anomaly_counts = anomalies_df["Anomaly"].value_counts(normalize=True) * 100
             yes_percent = anomaly_counts.get("Yes", 0)
             no_percent = anomaly_counts.get("No", 0)
-
-            st.write("**Anomaly Breakdown:**")
+            st.subheader("Anomaly Breakdown")
             st.write(f"- ✅ No Anomaly: **{no_percent:.2f}%**")
             st.write(f"- ⚠️ Anomaly: **{yes_percent:.2f}%**")
 
