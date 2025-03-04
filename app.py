@@ -66,8 +66,12 @@ def detect_anomalies(df, method):
         df["anomaly_score"] = model.fit_predict(X)
 
     elif method == "DBSCAN":
-        model = DBSCAN(eps=1.5, min_samples=5)
-        df["anomaly_score"] = model.fit_predict(X)
+        min_samples = min(5, len(df) // 2)  # Adjust min_samples for small datasets
+        model = DBSCAN(eps=1.5, min_samples=min_samples)
+        labels = model.fit_predict(X)
+        df["anomaly_score"] = labels
+        df["Anomaly"] = df["anomaly_score"].apply(lambda x: "Yes" if x == -1 else "No")
+        return df  # Return early as DBSCAN uses different labeling
 
     elif method == "Z-Score":
         df["anomaly_score"] = np.abs(zscore(X)).max(axis=1) > 2.5  # Mark as anomaly if z-score > 2.5
