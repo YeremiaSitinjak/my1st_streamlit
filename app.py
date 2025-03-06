@@ -65,22 +65,33 @@ def detect_anomalies(df, method):
         df["anomaly_score"] = model.fit_predict(X)
 
     elif method == "DBSCAN":
-        if len(df) < 5:
-            st.warning("DBSCAN requires at least 5 data points. Try another method.")
+        if df.empty:
+            st.error("No valid data available for DBSCAN. Please check the dataset.")
             df["Anomaly"] = "No"
-            return df  # Return without running DBSCAN
+            return df  # Exit early to prevent errors
 
-        min_samples = max(2, min(5, len(df) // 3))  # Reduce min_samples for Streamlit Cloud
-        X_dbscan = df[['log distance [m]', 'depth [%]']].dropna()  # Use fewer features
+        # Ensure required columns exist and drop missing values
+        required_features = ["log distance [m]", "depth [%]", "clock orientation"]
+        df = df.dropna(subset=required_features)
+
+        if df.empty:
+            st.error("No valid data after cleaning for DBSCAN.")
+            df["Anomaly"] = "No"
+            return df  # Exit early
+
+        min_samples = max(2, min(5, len(df) // 3))  # Adjust min_samples dynamically
+        X_dbscan = df[['log distance [m]', 'depth [%]']]  # Use fewer features to reduce memory use
         X_dbscan = StandardScaler().fit_transform(X_dbscan)  # Scale features
 
-        model = DBSCAN(eps=0.8, min_samples=min_samples)  # Reduce eps for smaller clusters
+        model = DBSCAN(eps=0.8, min_samples=min_samples)
         labels = model.fit_predict(X_dbscan)
 
         df["anomaly_score"] = -1  # Default to normal
         df.loc[df.index[:len(labels)], "anomaly_score"] = labels  # Assign computed labels
         df["Anomaly"] = df["anomaly_score"].apply(lambda x: "Yes" if x == -1 else "No")
+
         return df
+
 
     elif method == "Z-Score":
         df["anomaly_score"] = np.abs(zscore(X)).max(axis=1) > 2.5  # Mark as anomaly if z-score > 2.5
