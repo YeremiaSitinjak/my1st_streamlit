@@ -3,11 +3,9 @@ import pandas as pd
 import numpy as np
 import os
 import datetime
+import plotly.express as px
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
-from sklearn.neighbors import LocalOutlierFactor
-from sklearn.cluster import DBSCAN
-from scipy.stats import zscore
 
 # Function to convert "clock orientation" to degrees
 def convert_clock_orientation(val):
@@ -24,128 +22,99 @@ def convert_clock_orientation(val):
 
 # Function to preprocess the uploaded Excel file
 def preprocess_data(df):
-    df.columns = df.columns.str.strip().str.lower()  # Standardize column names
-
-    # Ensure required columns exist
-    required_columns = ["log distance [m]", "component/anomaly type", "clock orientation", "depth [%]", "surface location"]
+    df.columns = df.columns.str.strip().str.lower()
+    required_columns = ["log distance [m]", "component/anomaly type", "clock orientation"]
     for col in required_columns:
         if col not in df.columns:
             df[col] = np.nan
-
-    # Convert "clock orientation" values
     df["clock orientation"] = df["clock orientation"].apply(convert_clock_orientation)
-
-    # Keep only "anomaly" rows
-    df = df[df["component/anomaly type"].str.lower() == "anomaly"]
-
-    # Drop missing values in key columns
-    df = df.dropna(subset=["log distance [m]", "depth [%]", "clock orientation"])
-
+    df = df.dropna(subset=["log distance [m]", "clock orientation"])
     return df
 
-# Function to calculate missing value percentage
-def calculate_missing_percentage(df):
-    return (df.isnull().sum() / len(df)) * 100
+# Function to detect outliers across different years using Isolation Forest
+def detect_outliers_across_years(historical_data, contamination):
+    results = []
+    for year, df in historical_data.items():
+        features = ["log distance [m]", "clock orientation"]
+        scaler = StandardScaler()
+        X = scaler.fit_transform(df[features])
 
-# Function to detect anomalies using different methods
-def detect_anomalies(df, method):
-    df = df.copy()
-    features = ["log distance [m]", "depth [%]", "clock orientation"]
+        model = IsolationForest(contamination=contamination, random_state=42)
+        outlier_scores = model.fit_predict(X)
+        df["Outlier"] = ["Yes" if score == -1 else "No" for score in outlier_scores]
+        df["Year"] = year
+        results.append(df)
 
-    # Standardize features for consistency
-    scaler = StandardScaler()
-    X = scaler.fit_transform(df[features])
+    combined_df = pd.concat(results).reset_index(drop=True)
+    return combined_df
 
-    if method == "Isolation Forest":
-        model = IsolationForest(contamination=0.05, random_state=42)
-        df["anomaly_score"] = model.fit_predict(X)
+# Function to plot the most outlier-heavy data points
+def plot_most_outliers(combined_df):
+    outlier_counts = combined_df.groupby("Year")["Outlier"].apply(lambda x: (x == "Yes").sum())
+    most_outlier_year = outlier_counts.idxmax()
+    df_most_outliers = combined_df[combined_df["Year"] == most_outlier_year]
 
-    elif method == "Local Outlier Factor":
-        model = LocalOutlierFactor(n_neighbors=20, contamination=0.05)
-        df["anomaly_score"] = model.fit_predict(X)
+    fig = px.scatter(
+        df_most_outliers, x="log distance [m]", y="clock orientation",
+        color="Outlier", title=f"Most Outlier Data Points ({most_outlier_year})",
+        labels={"log distance [m]": "Distance [m]", "clock orientation": "Clock Orientation"},
+        template="plotly_white"
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-    elif method == "DBSCAN":
-        if df.empty:
-            st.error("No valid data available for DBSCAN. Please check the dataset.")
-            df["Anomaly"] = "No"
-            return df  # Exit early to prevent errors
-
-        # Ensure required columns exist and drop missing values
-        required_features = ["log distance [m]", "depth [%]", "clock orientation"]
-        df = df.dropna(subset=required_features)
-
-        if df.empty:
-            st.error("No valid data after cleaning for DBSCAN.")
-            df["Anomaly"] = "No"
-            return df  # Exit early
-
-        min_samples = max(2, min(5, len(df) // 3))  # Adjust min_samples dynamically
-        X_dbscan = df[['log distance [m]', 'depth [%]']]  # Use fewer features to reduce memory use
-        X_dbscan = StandardScaler().fit_transform(X_dbscan)  # Scale features
-
-        model = DBSCAN(eps=0.8, min_samples=min_samples)
-        labels = model.fit_predict(X_dbscan)
-
-        df["anomaly_score"] = -1  # Default to normal
-        df.loc[df.index[:len(labels)], "anomaly_score"] = labels  # Assign computed labels
-        df["Anomaly"] = df["anomaly_score"].apply(lambda x: "Yes" if x == -1 else "No")
-
-        return df
-
-
-    elif method == "Z-Score":
-        df["anomaly_score"] = np.abs(zscore(X)).max(axis=1) > 2.5  # Mark as anomaly if z-score > 2.5
-
-    df["Anomaly"] = df["anomaly_score"].apply(lambda x: "Yes" if x == -1 else "No")
-    return df
+# Function to generate outlier summary table
+def generate_outlier_summary(combined_df):
+    summary = combined_df.groupby("Year")["Outlier"].value_counts(normalize=True).unstack() * 100
+    summary = summary.rename(columns={"Yes": "% Outliers", "No": "% Normal"}).fillna(0)
+    return summary
 
 # Streamlit App UI
-st.title("Pipe Sensor Data Analysis")
+st.title("Pipe Sensor Data Analysis - Outlier Detection")
 
-# File Upload Section
 uploaded_files = st.file_uploader("Upload multiple Excel files", accept_multiple_files=True, type=['xlsx'])
 
 if uploaded_files:
     st.subheader("Uploaded Files Summary")
     historical_data = {}
+
     for uploaded_file in uploaded_files:
         file_name = uploaded_file.name
-        year = "".join(filter(str.isdigit, file_name))  # Extract year from filename
+        year = "".join(filter(str.isdigit, file_name))
         df = pd.read_excel(uploaded_file)
         df = preprocess_data(df)
         historical_data[year] = df
-
-# Show missing percentage
-        missing_percentage = calculate_missing_percentage(df)
-        st.write(f"**Missing Data Percentage for {file_name}**")
-        st.write(missing_percentage)
-
+        st.write(f"**File: {file_name} ({year})**")
+        st.write(df.head())
+    
     if len(historical_data) > 1:
-        st.subheader("Anomaly Detection")
-        years_sorted = sorted(historical_data.keys())
-        latest_year = years_sorted[-1]
-        df_latest = historical_data[latest_year]
+        st.subheader("Outlier Detection Across Years")
+        
+        # Display Rule of Thumb Table
+        st.subheader("📊 Contamination Sensitivity Guide")
+        contamination_table = pd.DataFrame({
+            "Contamination Value": ["0.01 (1%)", "0.03 (3%)", "0.05 (5%)", "0.10 (10%)"],
+            "Effect": [
+                "✅ Very strict: Only extreme anomalies are flagged",
+                "⚖️ Balanced: Moderate number of anomalies detected",
+                "🔍 Detects more anomalies: Some slight variations flagged",
+                "❌ Highly sensitive: Even minor deviations are considered anomalies"
+            ]
+        })
+        st.table(contamination_table)
+        
+        contamination = st.slider("Select Contamination (Outlier Sensitivity)", 0.01, 0.10, 0.03, 0.01)
+        
+        with st.spinner(f"Running Isolation Forest with contamination={contamination}... Please wait."):
+            combined_df = detect_outliers_across_years(historical_data, contamination)
+        
+        st.subheader("Most Outlier-Heavy Year")
+        plot_most_outliers(combined_df)
+        
+        # Display summary table
+        st.subheader("Outlier Summary by Year")
+        summary_table = generate_outlier_summary(combined_df)
+        st.table(summary_table)
 
-        # User selects anomaly detection method
-        method = st.selectbox("Choose Anomaly Detection Method", ["Isolation Forest", "Local Outlier Factor", "DBSCAN", "Z-Score"])
-
-        # Show loading spinner while detecting anomalies
-        with st.spinner(f"Running {method}... Please wait."):
-            anomalies_df = detect_anomalies(df_latest, method)
-
-        # Show results in two columns
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.subheader("Anomaly Detection Results")
-            st.dataframe(anomalies_df[["log distance [m]", "depth [%]", "clock orientation", "Anomaly"]])
-        with col2:
-            anomaly_counts = anomalies_df["Anomaly"].value_counts(normalize=True) * 100
-            yes_percent = anomaly_counts.get("Yes", 0)
-            no_percent = anomaly_counts.get("No", 0)
-            st.subheader("Anomaly Breakdown")
-            st.write(f"- ✅ No Anomaly: **{no_percent:.2f}%**")
-            st.write(f"- ⚠️ Anomaly: **{yes_percent:.2f}%**")
-
-        # Downloadable anomaly file
-        csv = anomalies_df.to_csv(index=False).encode('utf-8')
-        st.download_button("Download Anomaly Report", csv, f"anomalies_{latest_year}.csv", "text/csv")
+        st.subheader("Download Outlier Report")
+        csv = combined_df.to_csv(index=False).encode('utf-8')
+        st.download_button("Download Outlier Report", csv, "outliers_report.csv", "text/csv")
