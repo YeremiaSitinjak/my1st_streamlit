@@ -10,6 +10,15 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import NearestNeighbors
 from scipy import stats
 
+# Initialize session state for segmented analysis
+if 'segmented_results' not in st.session_state:
+    st.session_state.segmented_results = None
+if 'segment_stats' not in st.session_state:
+    st.session_state.segment_stats = None
+if 'segments' not in st.session_state:
+    st.session_state.segments = None
+
+
 # Set page configuration
 st.set_page_config(layout="wide", page_title="Pipe Sensor Analysis", page_icon="🔍")
 
@@ -314,6 +323,160 @@ def compare_distributions(historical_data):
     
     return results_df
 
+# Function to filter and display data for a specific segment
+def filter_and_display_segment(combined_df, year, segment=None):
+    """Efficiently filter and display data for a selected segment without reprocessing."""
+    df_to_plot = combined_df[combined_df["Year"] == year]
+    
+    if segment != "All Segments" and segment is not None:
+        df_to_plot = df_to_plot[df_to_plot["Segment"] == segment]
+    
+    title = f"Outliers in {year} - {segment if segment != 'All Segments' else 'All Segments'}"
+    
+    fig = px.scatter(
+        df_to_plot,
+        x="log distance [m]",
+        y="clock orientation",
+        color="Outlier",
+        title=title,
+        color_discrete_map={"Yes": "blue", "No": "red"},
+        hover_data=["Outlier_Score", "component/anomaly type"]
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# Function to create weld-based segments
+@st.cache_data
+def create_weld_based_segments(historical_data):
+    """Segment pipe data using welds as natural boundary points."""
+    segmentation_results = {}
+    
+    for year, df in historical_data.items():
+        # Find all weld positions
+        weld_rows = df[df["component/anomaly type"].str.lower().str.contains("weld")]
+        weld_positions = sorted(weld_rows["log distance [m]"].values)
+        
+        # Add start and end points if needed
+        min_dist = df["log distance [m]"].min()
+        max_dist = df["log distance [m]"].max()
+        
+        if len(weld_positions) == 0:
+            segments = [(min_dist, max_dist, "Full-Pipe")]
+        else:
+            segments = []
+            # Add segment before first weld if needed
+            if weld_positions[0] > min_dist + 1:
+                segments.append((min_dist, weld_positions[0], "Pre-Weld"))
+                
+            # Add segments between welds
+            for i in range(len(weld_positions)-1):
+                start = weld_positions[i]
+                end = weld_positions[i+1]
+                segments.append((start, end, f"W{i+1}-W{i+2}"))
+                
+            # Add segment after last weld if needed
+            if weld_positions[-1] < max_dist - 1:
+                segments.append((weld_positions[-1], max_dist, "Post-Weld"))
+        
+        segmentation_results[year] = segments
+    
+    return segmentation_results
+
+# Function to detect outliers within each segment
+@st.cache_data
+def detect_outliers_by_segment(historical_data, segments, contamination=None):
+    """Detect outliers within each segment separately."""
+    results = []
+    segment_stats = []
+    
+    for year, df in historical_data.items():
+        year_segments = segments[year]
+        
+        for start, end, segment_name in year_segments:
+            # Extract data for this segment
+            segment_df = df[(df["log distance [m]"] >= start) & 
+                           (df["log distance [m]"] < end)].copy()
+            
+            if len(segment_df) < 10:  # Skip if too few points
+                continue
+                
+            # Dynamic contamination based on segment size if not specified
+            if contamination is None:
+                segment_contamination = min(0.05, 10/len(segment_df))
+            else:
+                segment_contamination = contamination
+                
+            # Extract features for outlier detection
+            features = ["log distance [m]", "clock orientation"]
+            scaler = StandardScaler()
+            X = scaler.fit_transform(segment_df[features])
+            
+            # Apply Isolation Forest
+            model = IsolationForest(contamination=segment_contamination, random_state=42)
+            outlier_scores = model.fit_predict(X)
+            segment_df["Outlier"] = ["Yes" if score == -1 else "No" for score in outlier_scores]
+            segment_df["Outlier_Score"] = model.decision_function(X)
+            segment_df["Year"] = year
+            segment_df["Segment"] = segment_name
+            
+            # Collect results
+            results.append(segment_df)
+            
+            # Collect segment statistics
+            total_points = len(segment_df)
+            outlier_count = (segment_df["Outlier"] == "Yes").sum()
+            segment_stats.append({
+                "Year": year,
+                "Segment": segment_name,
+                "Start (m)": round(start, 2),
+                "End (m)": round(end, 2),
+                "Length (m)": round(end - start, 2),
+                "Total Points": total_points,
+                "Outliers": outlier_count,
+                "Outlier %": round(100 * outlier_count / total_points, 2) if total_points > 0 else 0
+            })
+    
+    # Combine all results
+    combined_df = pd.concat(results).reset_index(drop=True) if results else pd.DataFrame()
+    segment_stats_df = pd.DataFrame(segment_stats)
+    
+    return combined_df, segment_stats_df
+
+# Visualization functions for segmented analysis
+def plot_segment_outlier_summary(segment_stats_df):
+    """Plot a summary of outliers by segment."""
+    fig = px.bar(
+        segment_stats_df,
+        x="Segment",
+        y="Outlier %",
+        color="Year",
+        barmode="group",
+        title="Outlier Percentage by Segment",
+        text="Outlier %"
+    )
+    fig.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
+    st.plotly_chart(fig, use_container_width=True)
+
+def plot_segment_scatter(combined_df, year, segment=None):
+    """Plot scatter plot of a specific segment's data points."""
+    df_to_plot = combined_df[combined_df["Year"] == year]
+    
+    if segment is not None:
+        df_to_plot = df_to_plot[df_to_plot["Segment"] == segment]
+    
+    title = f"Outliers in {year} - {segment if segment else 'All Segments'}"
+    
+    fig = px.scatter(
+        df_to_plot,
+        x="log distance [m]",
+        y="clock orientation",
+        color="Outlier",
+        title=title,
+        color_discrete_map={"Yes": "blue", "No": "red"},
+        hover_data=["Outlier_Score", "component/anomaly type"]
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
 # Streamlit App UI with improved layout
 st.title("🔍 Pipe Sensor Data Analysis - Enhanced Version")
 
@@ -353,9 +516,10 @@ if uploaded_files:
                 historical_data[year] = df
         
         # Create tabs for different analyses
-        tab1, tab2, tab3, tab4 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📊 Data Overview", 
             "🔎 Outlier Analysis", 
+            "🔬 Segmented Analysis",
             "🔧 Weld Analysis",
             "📈 Statistical Tests"
         ])
@@ -440,15 +604,112 @@ if uploaded_files:
                 csv = combined_df.to_csv(index=False).encode('utf-8')
                 st.download_button("Download Outlier Report", csv, "outliers_report.csv", "text/csv")
             
-            # Tab 3: Weld Analysis
+            # Tab 3: Segmented Analysis
             with tab3:
+                st.header("Segmented Outlier Analysis")
+                
+                st.write("""
+                This analysis divides the pipe into segments based on weld positions and performs
+                outlier detection within each segment.
+                """)
+                
+                # Only create segments and run detection if not already in session state
+                if st.session_state.segments is None:
+                    with st.spinner("Creating weld-based segments..."):
+                        st.session_state.segments = create_weld_based_segments(historical_data)
+                
+                segments = st.session_state.segments
+                
+                # Check if segments were created
+                has_segments = all(len(segs) > 0 for segs in segments.values())
+                
+                if not has_segments:
+                    st.warning("Not enough weld markers found to create segments. Check your data.")
+                else:
+                    # Show segment overview
+                    st.subheader("Segment Overview")
+                    
+                    for year, year_segments in segments.items():
+                        with st.expander(f"Year {year} - {len(year_segments)} segments", expanded=False):
+                            segment_df = pd.DataFrame([
+                                {"Segment": seg_name, "Start (m)": round(start, 2), "End (m)": round(end, 2), 
+                                "Length (m)": round(end-start, 2)}
+                                for start, end, seg_name in year_segments
+                            ])
+                            st.dataframe(segment_df)
+                    
+                    # Outlier detection settings
+                    st.subheader("Segment-Specific Outlier Detection")
+                    
+                    use_global_contamination = st.checkbox("Use global contamination value", value=True)
+                    
+                    if use_global_contamination:
+                        segment_contamination = contamination
+                        st.info(f"Using global contamination value: {contamination}")
+                    else:
+                        segment_contamination = st.slider(
+                            "Segment-Specific Contamination",
+                            0.01, 0.20, 0.05, 0.01,
+                            help="Higher values will detect more outliers within each segment"
+                        )
+                    
+                    # Add a run analysis button to control when the expensive calculations happen
+                    run_analysis = st.button("Run Segmented Analysis") or st.session_state.segmented_results is not None
+                    
+                    if run_analysis:
+                        # Only run detection if not already in session state
+                        if st.session_state.segmented_results is None:
+                            with st.spinner("Running segmented outlier detection... (this may take a moment)"):
+                                combined_df, segment_stats_df = detect_outliers_by_segment(
+                                    historical_data, segments, 
+                                    segment_contamination if use_global_contamination else None
+                                )
+                                st.session_state.segmented_results = combined_df
+                                st.session_state.segment_stats = segment_stats_df
+                        
+                        # Use the cached results for display
+                        combined_df = st.session_state.segmented_results
+                        segment_stats_df = st.session_state.segment_stats
+                        
+                        if len(segment_stats_df) > 0:
+                            # Display segment statistics
+                            st.subheader("Segment Statistics")
+                            st.dataframe(segment_stats_df)
+                            
+                            # Plot summary
+                            st.subheader("Outlier Distribution by Segment")
+                            plot_segment_outlier_summary(segment_stats_df)
+                            
+                            # Explore individual segments - THIS SECTION WILL BE MUCH FASTER NOW
+                            st.subheader("Explore Individual Segments")
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                selected_year = st.selectbox("Select Year", sorted(historical_data.keys()))
+                            
+                            with col2:
+                                year_segments = [seg[2] for seg in segments[selected_year]]
+                                selected_segment = st.selectbox("Select Segment", ["All Segments"] + year_segments)
+                            
+                            # This function only filters existing data, doesn't rerun the analysis
+                            filter_and_display_segment(combined_df, selected_year, selected_segment)
+                            
+                            # Download segmented results
+                            st.subheader("Download Segmented Analysis")
+                            csv = combined_df.to_csv(index=False).encode('utf-8')
+                            st.download_button("Download Segmented Results", csv, "segmented_outliers.csv", "text/csv")
+                        else:
+                            st.warning("No valid segments found for analysis. Please check your data.")
+            
+            # Tab 4: Weld Analysis
+            with tab4:
                 st.header("Weld Analysis Across Years")
                 
                 weld_summary = weld_error_summary(historical_data)
                 pairing_results = match_welds_across_years(historical_data, tolerance)
             
-            # Tab 4: Statistical Tests
-            with tab4:
+            # Tab 5: Statistical Tests
+            with tab5:
                 st.header("Statistical Analysis")
                 
                 st.write("""
