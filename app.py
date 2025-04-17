@@ -31,6 +31,7 @@ def preprocess_data(df):
         if col not in df.columns:
             df[col] = np.nan
     df["clock orientation"] = df["clock orientation"].apply(convert_clock_orientation)
+    df["component/anomaly type"] = df["component/anomaly type"].astype(str)
     df = df.dropna(subset=["log distance [m]"])
     return df
 
@@ -478,7 +479,7 @@ def plot_segment_scatter(combined_df, year, segment=None):
     st.plotly_chart(fig, use_container_width=True)
 
 # Streamlit App UI with improved layout
-st.title("🔍 Pipe Sensor Data Analysis - Enhanced Version")
+st.title("🔍 Inline Inspection Data Matching & Prediction")
 
 # Create sidebar for controls
 with st.sidebar:
@@ -544,6 +545,77 @@ if uploaded_files:
                         title=f"Distribution of Anomaly Types - {year}"
                     )
                     st.plotly_chart(fig)
+
+            for year, df in historical_data.items():
+                # Filter for anomalies only
+                anomaly_df = df[df["component/anomaly type"].str.lower().str.contains("anomaly", na=False)]
+                if len(anomaly_df) == 0:
+                    st.info(f"No anomalies found in {year}")
+                    continue
+
+                fig = go.Figure()
+
+                # Add anomaly points
+                fig.add_trace(go.Scatter(
+                    x=anomaly_df["log distance [m]"],
+                    y=anomaly_df["clock orientation"],
+                    mode='markers',
+                    marker=dict(color='blue', size=6),
+                    name='Anomaly Center'
+                ))
+
+                # Get weld positions for this year
+                weld_positions = df[df["component/anomaly type"].str.lower().str.contains("weld", na=False)]["log distance [m]"].dropna().unique()
+
+                # Add rectangles for each anomaly
+                shapes = []
+                for _, row in anomaly_df.iterrows():
+                    x = row["log distance [m]"]
+                    y = row["clock orientation"]
+                    length = row.get("length [mm]", 0) / 1000 if pd.notnull(row.get("length [mm]", 0)) else 0
+                    width = row.get("width [mm]", 0) if pd.notnull(row.get("width [mm]", 0)) else 0
+                    shapes.append(dict(
+                        type="rect",
+                        xref="x", yref="y",
+                        x0=x - length/2, x1=x + length/2,
+                        y0=y - width/2, y1=y + width/2,
+                        line=dict(color="red"),
+                        fillcolor="rgba(0,0,0,0)",
+                        layer="above"
+                    ))
+
+                # Add range slider for interactive zooming
+                fig.update_xaxes(
+                    rangeslider_visible=True,
+                    rangeslider_thickness=0.1
+                )
+
+                fig.update_layout(
+                    title=f"Anomaly Distribution in {year}",
+                    xaxis_title="Log Distance (m)",
+                    yaxis_title="Clock Orientation (deg)",
+                    shapes=shapes,
+                    showlegend=False
+                )
+
+                # Fast approach - limit number of welds and remove annotations
+                if len(weld_positions) > 30:
+                    # Sample evenly spaced welds
+                    indices = np.linspace(0, len(weld_positions)-1, 30, dtype=int)
+                    weld_positions = weld_positions[indices]
+
+                # Add vertical lines for welds
+                for weld_x in weld_positions:
+                    fig.add_vline(
+                        x=weld_x,
+                        line_width=1,
+                        line_dash="dash",
+                        line_color="green",
+                        annotation_text="Weld",
+                        #annotation_position="top left"
+                    )
+                
+                st.plotly_chart(fig, use_container_width=True)
         
         if len(historical_data) > 1:
             # Tab 2: Outlier Analysis
@@ -742,7 +814,7 @@ if uploaded_files:
         st.error("Please check your data format and try again.")
 else:
     # Welcome screen when no files are uploaded
-    st.write("## 👋 Welcome to the Pipe Sensor Data Analysis App!")
+    st.write("## 👋 Welcome to the Inline Inspection App!")
     st.write("""
     This application helps analyze pipe sensor data across different years to:
     - Detect and visualize outliers using machine learning
