@@ -32,6 +32,7 @@ def preprocess_data(df):
             df[col] = np.nan
     df["clock orientation"] = df["clock orientation"].apply(convert_clock_orientation)
     df["component/anomaly type"] = df["component/anomaly type"].astype(str)
+    df["depth [%]"] = pd.to_numeric(df["depth [%]"], errors="coerce")
     df = df.dropna(subset=["log distance [m]"])
     return df
 
@@ -546,11 +547,60 @@ if uploaded_files:
                     )
                     st.plotly_chart(fig)
 
+            # Determine global min/max depth across all years for slider range
+            all_depths = []
+            for df in historical_data.values():
+                if "depth [%]" in df.columns:
+                    all_depths.extend(df["depth [%]"].dropna().tolist())
+
+            if all_depths:
+                min_depth = float(np.nanmin(all_depths))
+                max_depth = float(np.nanmax(all_depths))
+            else:
+                min_depth, max_depth = 0.0, 100.0  # Fallback if no depth data
+
+            selected_min_depth, selected_max_depth = st.slider(
+                'Select Depth Range [%]',
+                min_value=min_depth,
+                max_value=max_depth,
+                value=(min_depth, max_depth)
+            )
+            st.write(f"Showing anomalies with depth between {selected_min_depth:.1f}% and {selected_max_depth:.1f}%")
+
+            # Determine the global min/max for distance across all years
+            all_distances = []
+            for df in historical_data.values():
+                all_distances.extend(df["log distance [m]"].dropna().tolist())
+            if all_distances:
+                min_distance = float(np.nanmin(all_distances))
+                max_distance = float(np.nanmax(all_distances))
+            else:
+                min_distance, max_distance = 0.0, 1.0
+
+            # Add Go to Distance UI
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                goto_distance = st.number_input(
+                    "Go to Distance (left edge, meters):",
+                    min_value=min_distance,
+                    max_value=max_distance,
+                    value=min_distance,
+                    step=1.0
+                )
+            with col2:
+                go_button = st.button("Go", key="goto_distance_btn")
+
             for year, df in historical_data.items():
                 # Filter for anomalies only
                 anomaly_df = df[df["component/anomaly type"].str.lower().str.contains("anomaly", na=False)]
+                # Filter by depth range if column exists
+                if "depth [%]" in anomaly_df.columns:
+                    anomaly_df = anomaly_df[
+                        (anomaly_df["depth [%]"] >= selected_min_depth) &
+                        (anomaly_df["depth [%]"] <= selected_max_depth)
+                    ]
                 if len(anomaly_df) == 0:
-                    st.info(f"No anomalies found in {year}")
+                    st.info(f"No anomalies found in {year} within selected depth range.")
                     continue
 
                 fig = go.Figure()
@@ -595,7 +645,25 @@ if uploaded_files:
                     xaxis_title="Log Distance (m)",
                     yaxis_title="Clock Orientation (deg)",
                     shapes=shapes,
-                    showlegend=False
+                    showlegend=False,
+                    hovermode='closest',
+                    xaxis=dict(
+                        showspikes=True,
+                        spikemode='across',
+                        spikesnap='cursor',
+                        showline=True,
+                        spikethickness=1,
+                        spikecolor="black"
+                    ),
+                    yaxis=dict(
+                        showspikes=True,
+                        spikemode='across',
+                        spikesnap='cursor',
+                        showline=True,
+                        spikethickness=1,
+                        spikecolor="black"
+                    ),
+                    hoverlabel=dict(bgcolor="white", font_size=12)
                 )
 
                 # Fast approach - limit number of welds and remove annotations
@@ -615,6 +683,10 @@ if uploaded_files:
                         #annotation_position="top left"
                     )
                 
+                # Set the x-axis range if Go button is pressed
+                if go_button:
+                    fig.update_xaxes(range=[goto_distance, goto_distance + 10])
+
                 st.plotly_chart(fig, use_container_width=True)
         
         if len(historical_data) > 1:
