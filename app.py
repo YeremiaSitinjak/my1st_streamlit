@@ -53,6 +53,12 @@ def convert_clock_orientation(val):
         st.error(f"Error converting clock orientation: {e}")
         return np.nan
 
+#function to convert mm to degrees based on pipe diameter
+def mm_to_deg(width_mm, pipe_diameter_mm):
+    """Convert anomaly width in mm to degrees using the pipe diameter."""
+    circumference = np.pi * pipe_diameter_mm
+    return (width_mm / circumference) * 360 if pipe_diameter_mm > 0 else 0
+
 # Function to detect outliers across different years using Isolation Forest
 @st.cache_data
 def detect_outliers_across_years(historical_data, contamination):
@@ -490,6 +496,7 @@ with st.sidebar:
                                     accept_multiple_files=True, 
                                     type=['xlsx'])
     
+    #outlier detection settings
     st.markdown("---")
     st.subheader("Outlier Detection Settings")
     contamination = st.slider(
@@ -502,6 +509,18 @@ with st.sidebar:
         "Weld Matching Tolerance", 
         0.01, 0.20, 0.05, 0.01,
         help="Maximum distance difference to consider welds as matching between years."
+    )
+
+    #pipe geometry settings
+    st.markdown("---")
+    st.subheader("Pipe Geometry")
+    inside_diameter_mm = st.number_input(
+        "Inside Diameter (mm)", 
+        min_value=1.0, 
+        max_value=5000.0, 
+        value=900.0,  # default value
+        step=1.0,
+        help="Enter the pipe's inside diameter in millimeters. Used for converting width [mm] to degrees."
     )
 
 if uploaded_files:
@@ -606,12 +625,24 @@ if uploaded_files:
                 fig = go.Figure()
 
                 # Add anomaly points
-                fig.add_trace(go.Scatter(
+                fig.add_trace(go.Scattergl(
                     x=anomaly_df["log distance [m]"],
                     y=anomaly_df["clock orientation"],
                     mode='markers',
                     marker=dict(color='blue', size=6),
-                    name='Anomaly Center'
+                    name='Anomaly Center',
+                    customdata=np.stack([
+                    anomaly_df.get("length [mm]", pd.Series([None]*len(anomaly_df))),
+                    anomaly_df.get("width [mm]", pd.Series([None]*len(anomaly_df))),
+                    anomaly_df.get("depth [%]", pd.Series([None]*len(anomaly_df)))
+                ], axis=-1),
+                hovertemplate=
+                    "Distance: %{x}<br>"+
+                    "Orientation: %{y}<br>"+
+                    "Length [mm]: %{customdata[0]}<br>"+
+                    "Width [mm]: %{customdata[1]}<br>"+
+                    "Depth [%]: %{customdata[2]}<br>"+
+                    "<extra></extra>"
                 ))
 
                 # Get weld positions for this year
@@ -623,12 +654,17 @@ if uploaded_files:
                     x = row["log distance [m]"]
                     y = row["clock orientation"]
                     length = row.get("length [mm]", 0) / 1000 if pd.notnull(row.get("length [mm]", 0)) else 0
-                    width = row.get("width [mm]", 0) if pd.notnull(row.get("width [mm]", 0)) else 0
+                    width_mm = row.get("width [mm]", 0) if pd.notnull(row.get("width [mm]", 0)) else 0
+                    width_deg = mm_to_deg(width_mm, inside_diameter_mm)
+                    x0 = x - length/2
+                    x1 = x + length/2
+                    y0 = y - width_deg/2
+                    y1 = y + width_deg/2
                     shapes.append(dict(
                         type="rect",
                         xref="x", yref="y",
-                        x0=x - length/2, x1=x + length/2,
-                        y0=y - width/2, y1=y + width/2,
+                        x0=x0, x1=x1,
+                        y0=y0, y1=y1,
                         line=dict(color="red"),
                         fillcolor="rgba(0,0,0,0)",
                         layer="above"
