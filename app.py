@@ -5,6 +5,7 @@ import os
 import datetime
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import NearestNeighbors
@@ -17,6 +18,8 @@ if 'segment_stats' not in st.session_state:
     st.session_state.segment_stats = None
 if 'segments' not in st.session_state:
     st.session_state.segments = None
+if 'historical_data' not in st.session_state:
+    st.session_state.historical_data = None
 
 
 # Set page configuration
@@ -179,7 +182,7 @@ def weld_error_summary(historical_data):
         min_year = min(weld_counts, key=weld_counts.get)
         min_count = weld_counts[min_year]
 
-    st.subheader("Weld Error Summary")
+    st.subheader("Weld Count Summary")
     result_data = []
     for year, count in weld_counts.items():
         diff = count - min_count
@@ -188,16 +191,6 @@ def weld_error_summary(historical_data):
 
     result_df = pd.DataFrame(result_data, columns=["Year", "Weld Count", "+/-", "% Change"])
     st.dataframe(result_df)
-    
-    # Add weld count visualization if there are welds
-    if any(weld_counts.values()):
-        fig = px.bar(
-            result_df, x="Year", y="Weld Count",
-            title="Weld Counts by Year",
-            text="Weld Count"
-        )
-        fig.update_traces(texttemplate='%{text}', textposition='outside')
-        st.plotly_chart(fig, use_container_width=True)
     
     return result_df
 
@@ -535,6 +528,7 @@ if uploaded_files:
                 df = pd.read_excel(uploaded_file)
                 df = preprocess_data(df)
                 historical_data[year] = df
+                st.session_state.historical_data = historical_data
         
         # Create tabs for different analyses
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -874,6 +868,20 @@ if uploaded_files:
                             # This function only filters existing data, doesn't rerun the analysis
                             filter_and_display_segment(combined_df, selected_year, selected_segment)
                             
+                            #subplot for all years
+                            st.subheader("Outlier Distribution Across All Years")
+                            fig = px.scatter(
+                                combined_df,
+                                x="log distance [m]",
+                                y="clock orientation",
+                                color="Outlier",
+                                title="Outlier Distribution Across All Years",
+                                color_discrete_map={"Yes": "blue", "No": "red"},
+                                hover_data=["Outlier_Score", "component/anomaly type","Year"]
+                            )
+                            fig.update_traces(marker=dict(size=5))
+                            st.plotly_chart(fig, use_container_width=True)
+
                             # Download segmented results
                             st.subheader("Download Segmented Analysis")
                             csv = combined_df.to_csv(index=False).encode('utf-8')
@@ -883,10 +891,108 @@ if uploaded_files:
             
             # Tab 4: Weld Analysis
             with tab4:
-                st.header("Weld Analysis Across Years")
-                
+                st.header("Weld Position Analysis")
                 weld_summary = weld_error_summary(historical_data)
-                pairing_results = match_welds_across_years(historical_data, tolerance)
+
+                st.header("Weld Position Analysis")
+                
+                if 'historical_data' not in st.session_state or st.session_state.historical_data is None:
+                    st.warning("Please upload and preprocess data first.")
+                else:
+                    # Get weld data from all years
+                    historical_data = st.session_state.historical_data
+                    weld_positions_by_year = {}
+                    for year, df in historical_data.items():
+                        welds = df[df["component/anomaly type"].str.lower().str.contains("weld", na=False)]
+                        weld_positions = welds["log distance [m]"].dropna().sort_values().unique()
+                        weld_positions_by_year[year] = weld_positions
+
+                    # Let user set matching tolerance
+                    col1, col2 = st.columns([2, 3])
+                    with col1:
+                        tolerance = st.slider("Matching tolerance (meters)", 0.0, 1.0, 0.0,step=0.1)
+                    
+                    # Calculate unmatched welds
+                    all_welds = np.concatenate(list(weld_positions_by_year.values()))
+                    unmatched_welds_by_year = {}
+                    for year, welds in weld_positions_by_year.items():
+                        other_years_welds = np.concatenate(
+                            [w for y, w in weld_positions_by_year.items() if y != year]
+                        )
+                        unmatched = []
+                        for w in welds:
+                            if not np.any(np.abs(other_years_welds - w) <= tolerance):
+                                unmatched.append(w)
+                        unmatched_welds_by_year[year] = np.array(unmatched)
+
+                    # Create visualization
+                    fig = go.Figure()
+                    colors = px.colors.qualitative.Plotly  # Consistent color scheme
+                    
+                    for idx, (year, welds) in enumerate(weld_positions_by_year.items()):
+                        color = colors[idx % len(colors)]
+                        
+                        # Plot all welds
+                        for weld_x in welds:
+                            is_unmatched = weld_x in unmatched_welds_by_year[year]
+                            
+                            fig.add_vline(
+                                x=weld_x,
+                                line_width=2,
+                                line_color=color,
+                                line_dash="dot" if is_unmatched else "solid",
+                            )
+
+                    # Add legend using dummy traces
+                    for idx, year in enumerate(weld_positions_by_year.keys()):
+                        fig.add_trace(go.Scatter(
+                            x=[None], y=[None],
+                            mode='lines',
+                            line=dict(color=colors[idx % len(colors)], width=2),
+                            name=f"{year} welds"
+                        ))
+                        
+                    fig.add_trace(go.Scatter(
+                        x=[None], y=[None],
+                        mode='lines',
+                        line=dict(color='black', width=2, dash='solid'),
+                        name='Matched welds'
+                    ))
+                    
+                    fig.add_trace(go.Scatter(
+                        x=[None], y=[None],
+                        mode='lines',
+                        line=dict(color='black', width=2, dash='dot'),
+                        name='Unmatched welds'
+                    ))
+
+                    # Configure layout
+                    fig.update_layout(
+                        title=f"Weld Position Comparison Across Years (Tolerance: {tolerance}m)",
+                        xaxis_title="Log Distance (m)",
+                        yaxis=dict(showticklabels=False, range=[0, 1]),
+                        showlegend=True,
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                        height=600,
+                        margin=dict(t=100)
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Show unmatched weld statistics
+                    st.subheader("Unmatched Weld Statistics")
+                    for year, unmatched in unmatched_welds_by_year.items():
+                        total_welds = len(weld_positions_by_year[year])
+                        unmatched_count = len(unmatched)
+                        unmatched_pct = (unmatched_count / total_welds) * 100 if total_welds > 0 else 0
+                        st.write(
+                            f"**{year}**: {unmatched_count} unmatched welds "
+                            f"({unmatched_pct:.1f}% of {total_welds} total welds)"
+                        )
+                        if unmatched_count > 0:
+                            st.write(f"Positions: {', '.join(map(lambda x: f'{x:.1f}m', unmatched))}")
+
+
             
             # Tab 5: Statistical Tests
             with tab5:
