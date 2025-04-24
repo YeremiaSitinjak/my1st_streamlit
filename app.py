@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import os
 import datetime
+import time
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -104,6 +105,13 @@ def plot_most_outliers(combined_df):
         labels={"log distance [m]": "Distance [m]", "clock orientation": "Clock Orientation"},
         template="plotly_white", hover_data=["component/anomaly type", "Anomaly_Severity"]
     )
+    
+    fig.update_layout(
+    dragmode='zoom',  # Enable zoom interaction
+    xaxis=dict(fixedrange=False),  # Allow horizontal zoom
+    yaxis=dict(fixedrange=False),  # Allow vertical zoom
+    )
+    
     st.plotly_chart(fig, use_container_width=True)
 
 # Function to generate outlier summary table
@@ -487,22 +495,24 @@ with st.sidebar:
     st.info("ℹ️ Upload Excel files containing pipe sensor data from different years.")
     uploaded_files = st.file_uploader("Upload multiple Excel files", 
                                     accept_multiple_files=True, 
-                                    type=['xlsx'])
+                                    type=['xlsx','csv'])
     
-    #outlier detection settings
-    st.markdown("---")
-    st.subheader("Outlier Detection Settings")
-    contamination = st.slider(
-        "Select Contamination (Outlier Sensitivity)", 
-        0.01, 0.10, 0.03, 0.01,
-        help="Lower values are more strict in identifying outliers."
-    )
+    # #outlier detection settings
+    # st.markdown("---")
+    # st.subheader("Outlier Detection Settings")
+    # contamination = st.slider(
+    #     "Select Contamination (Outlier Sensitivity)", 
+    #     0.01, 0.10, 0.03, 0.01,
+    #     help="Lower values are more strict in identifying outliers."
+    # )
+    contamination = 0.03
     
-    tolerance = st.slider(
-        "Weld Matching Tolerance", 
-        0.01, 0.20, 0.05, 0.01,
-        help="Maximum distance difference to consider welds as matching between years."
-    )
+    # tolerance = st.slider(
+    #     "Weld Matching Tolerance", 
+    #     0.01, 0.20, 0.05, 0.01,
+    #     help="Maximum distance difference to consider welds as matching between years."
+    # )
+    tolerance = 0.05
 
     #pipe geometry settings
     st.markdown("---")
@@ -525,17 +535,26 @@ if uploaded_files:
             for uploaded_file in uploaded_files:
                 file_name = uploaded_file.name
                 year = "".join(filter(str.isdigit, file_name))
-                df = pd.read_excel(uploaded_file)
+
+                # Read file based on extension
+                if file_name.endswith(".csv"):
+                    df = pd.read_csv(uploaded_file)
+                elif file_name.endswith((".xls", ".xlsx")):
+                    df = pd.read_excel(uploaded_file)
+                else:
+                    st.warning(f"Unsupported file type: {file_name}")
+                    continue
+
                 df = preprocess_data(df)
                 historical_data[year] = df
                 st.session_state.historical_data = historical_data
         
         # Create tabs for different analyses
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📊 Data Overview", 
+            "📊 Data Overview",
+            "🔧 Weld Analysis", 
             "🔎 Outlier Analysis", 
             "🔬 Segmented Analysis",
-            "🔧 Weld Analysis",
             "📈 Statistical Tests"
         ])
         
@@ -591,7 +610,7 @@ if uploaded_files:
                 min_distance, max_distance = 0.0, 1.0
 
             # Add Go to Distance UI
-            col1, col2 = st.columns([3, 1])
+            col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
                 goto_distance = st.number_input(
                     "Go to Distance (left edge, meters):",
@@ -601,8 +620,19 @@ if uploaded_files:
                     step=1.0
                 )
             with col2:
-                go_button = st.button("Go", key="goto_distance_btn")
+                zoom_width = st.number_input(
+                    "Zoom width (meters):",
+                    min_value=1.0,
+                    max_value=max_distance - min_distance,
+                    value=50.0,
+                    step=1.0
+                )
+            with col3:
+                go_button = st.button("Go / Zoom")
 
+            with st.spinner("Preparing scatter plots..."):
+                progress_bar = st.progress(0)
+    
             for year, df in historical_data.items():
                 # Filter for anomalies only
                 anomaly_df = df[df["component/anomaly type"].str.lower().str.contains("anomaly", na=False)]
@@ -633,8 +663,8 @@ if uploaded_files:
                 hovertemplate=
                     "Distance: %{x}<br>"+
                     "Orientation: %{y}<br>"+
-                    "Length [mm]: %{customdata[0]}<br>"+
-                    "Width [mm]: %{customdata[1]}<br>"+
+                    "Length [mm]: %{customdata[0]:.2f}<br>"+
+                    "Width [mm]: %{customdata[1]:.2f}<br>"+
                     "Depth [%]: %{customdata[2]}<br>"+
                     "<extra></extra>"
                 ))
@@ -665,10 +695,10 @@ if uploaded_files:
                     ))
 
                 # Add range slider for interactive zooming
-                fig.update_xaxes(
-                    rangeslider_visible=True,
-                    rangeslider_thickness=0.1
-                )
+                #fig.update_xaxes(
+                #    rangeslider_visible=True,
+                #    rangeslider_thickness=0.1
+                #)
 
                 fig.update_layout(
                     title=f"Anomaly Distribution in {year}",
@@ -712,16 +742,22 @@ if uploaded_files:
                         annotation_text="Weld",
                         #annotation_position="top left"
                     )
+                    progress_bar.progress(len(weld_positions))
+                
+                # 
+                if st.session_state.get("xaxis_range") is not None:
+                    fig.update_xaxes(range=st.session_state.xaxis_range)
+                st.plotly_chart(fig, use_container_width=True)
                 
                 # Set the x-axis range if Go button is pressed
                 if go_button:
-                    fig.update_xaxes(range=[goto_distance, goto_distance + 10])
+                    st.session_state.xaxis_range = [goto_distance, goto_distance + zoom_width]
 
-                st.plotly_chart(fig, use_container_width=True)
+                progress_bar.empty()
         
         if len(historical_data) > 1:
-            # Tab 2: Outlier Analysis
-            with tab2:
+            # Tab 3: Outlier Analysis
+            with tab3:
                 st.header("Outlier Detection Across Years")
                 
                 # Display Rule of Thumb Table
@@ -778,8 +814,8 @@ if uploaded_files:
                 csv = combined_df.to_csv(index=False).encode('utf-8')
                 st.download_button("Download Outlier Report", csv, "outliers_report.csv", "text/csv")
             
-            # Tab 3: Segmented Analysis
-            with tab3:
+            # Tab 4: Segmented Analysis
+            with tab4:
                 st.header("Segmented Outlier Analysis")
                 
                 st.write("""
@@ -889,8 +925,8 @@ if uploaded_files:
                         else:
                             st.warning("No valid segments found for analysis. Please check your data.")
             
-            # Tab 4: Weld Analysis
-            with tab4:
+            # Tab 2: Weld Analysis
+            with tab2:
                 st.header("Weld Position Analysis")
                 weld_summary = weld_error_summary(historical_data)
 
@@ -977,7 +1013,7 @@ if uploaded_files:
                         margin=dict(t=100)
                     )
                     
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, staticPlot=True, use_container_width=True)
                     
                     # Show unmatched weld statistics
                     st.subheader("Unmatched Weld Statistics")
