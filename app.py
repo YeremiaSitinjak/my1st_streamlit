@@ -592,8 +592,8 @@ if uploaded_files:
             "📊 Overview",
             "🔧 Data Analysis", 
             "🔎 ILI Data Matching", 
+            "🛡️ ILI Corrosion Rate & Prediction",
             "📈 Statistical Tests",
-            "🛡️ Corrosion Rate & Prediction"
         ])
         
         # Tab 1: Data Overview
@@ -1235,7 +1235,7 @@ if uploaded_files:
                                 st.write(f"Positions: {', '.join(map(lambda x: f'{x:.1f}m', unmatched))}")
             
             # Tab 4: Statistical Tests
-            with tab4:
+            with tab5:
                 st.header("Statistical Analysis")
                 
                 st.write("""
@@ -1260,39 +1260,57 @@ if uploaded_files:
                 fig.update_traces(texttemplate='%{text}', textposition='outside')
                 st.plotly_chart(fig, use_container_width=True)
 
-            with tab5:
-                #sub menu linear corrosion rate and future depth prediction
+            with tab4:
+                # Sub menu linear corrosion rate and future depth prediction
                 with st.expander("Linear Corrosion Rate & Future Depth Prediction", expanded=False):
-                    st.header("Corrosion Rate & Future Depth Prediction")
+                    st.write("This section applies a linear corrosion rate model, assuming a constant rate of wall loss between two inspection years, to estimate future depth and remaining life.")
+
                     if (
                         'defect_matching_results' in st.session_state
                         and st.session_state.defect_matching_results is not None
                     ):
                         matched_df, unmatched_df = st.session_state.defect_matching_results
 
+                        # Ask user for pipe thickness
+                        pipe_thickness = st.number_input(
+                            "Enter pipe wall thickness (in mm):",
+                            min_value=0.1,
+                            value=12.7,
+                            step=0.1
+                        )
+
                         # Ensure required columns exist and are numeric
                         for col in ["Depth1", "Depth2"]:
                             if col not in matched_df.columns:
                                 st.warning("Matched defects must include depth columns (Depth1, Depth2).")
                                 st.stop()
-                            matched_df[col] = pd.to_numeric(matched_df[col], errors="coerce")
+                            # Fill missing/blank values with 1 and convert to numeric
+                            matched_df[col] = matched_df[col].replace(["", " "], 1).fillna(1)
+                            matched_df[col] = pd.to_numeric(matched_df[col], errors="coerce").fillna(1)
 
                         matched_df["Year1"] = pd.to_numeric(matched_df["Year1"], errors="coerce")
                         matched_df["Year2"] = pd.to_numeric(matched_df["Year2"], errors="coerce")
+
+                        # Convert depth % to mm using user-supplied pipe thickness
+                        matched_df["Depth1_mm"] = (matched_df["Depth1"] / 100) * pipe_thickness
+                        matched_df["Depth2_mm"] = (matched_df["Depth2"] / 100) * pipe_thickness
+
                         # Calculate corrosion rate (mm/year)
                         matched_df["Corrosion_Rate_mm_per_year"] = (
-                            (matched_df["Depth2"] - matched_df["Depth1"]) /
+                            (matched_df["Depth2_mm"] - matched_df["Depth1_mm"]) /
                             (matched_df["Year2"] - matched_df["Year1"])
                         )
 
+                        # Explanation
                         st.write("**Corrosion rate is calculated as:**")
                         st.latex(r"\textbf{Corrosion Rate (mm/year)} = \frac{\text{Depth}_2 - \text{Depth}_1}{\text{Year}_2 - \text{Year}_1}")
                         st.latex(r"\textbf{Predicted Depth}_{\text{future}} = \text{Depth}_2 + \text{Corrosion Rate} \times (\text{Future Year} - \text{Year}_2)")
 
-                        st.subheader("Corrosion Rate Table")
+                        # Display table
+                        st.subheader("Corrosion Rate Table (Values in mm)")
                         st.dataframe(
                             matched_df[
-                                ["Year1", "Depth1", "Year2", "Depth2", "Corrosion_Rate_mm_per_year"]
+                                ["Year1", "Depth1", "Depth1_mm", "Year2", "Depth2", "Depth2_mm", "Corrosion_Rate_mm_per_year"]
                             ],
                             use_container_width=True
                         )
@@ -1304,36 +1322,58 @@ if uploaded_files:
                             value=int(matched_df["Year2"].max()) + 5,
                             step=1,
                         )
-                        matched_df["Predicted_Depth"] = matched_df["Depth2"] + matched_df["Corrosion_Rate_mm_per_year"] * (future_year - matched_df["Year2"])
+                        
+                        # formula for remaining life
+                        st.write("**Remaining Life Calculation:**")
+                        st.latex(r"\textbf{Remaining Life (years)} = \frac{\text{Pipe Thickness} - \text{Predicted Depth}}{\text{Corrosion Rate (mm/year)}}")
 
-                        st.subheader(f"Predicted Depths for {future_year}")
+                        matched_df["Predicted_Depth_mm"] = matched_df["Depth2_mm"] + matched_df["Corrosion_Rate_mm_per_year"] * (future_year - matched_df["Year2"])
+
+                        # Calculate remaining years until 100% wall loss
+                        matched_df["Remaining_Years"] = (pipe_thickness - matched_df["Depth2_mm"]) / matched_df["Corrosion_Rate_mm_per_year"]
+                        matched_df["Remaining_Years"] = matched_df["Remaining_Years"].apply(lambda x: round(x, 1) if x > 0 else 0)
+
+                        # Show prediction table
+                        st.subheader(f"Predicted Corrosion Depth in {future_year} (mm)")
                         st.dataframe(
                             matched_df[
-                                ["Year2", "Depth2", "Corrosion_Rate_mm_per_year", "Predicted_Depth"]
+                                ["Year2", "Depth2_mm", "Corrosion_Rate_mm_per_year", "Predicted_Depth_mm", "Remaining_Years"]
                             ],
                             use_container_width=True
                         )
 
-                        # Visualize distribution
-                        st.subheader("Corrosion Rate Distribution")
+                        # Summary: Minimum remaining life (exclude non-positive values)
+                        valid_life_values = matched_df["Remaining_Years"]
+                        valid_life_values = valid_life_values[valid_life_values > 0]
+
+                        if not valid_life_values.empty:
+                            min_remaining_life = valid_life_values.min()
+                            st.metric("Minimum Remaining Life (Linear)", f"{min_remaining_life:.2f} years")
+                        else:
+                            st.info("No positive remaining life values to display.")
+
+                        # Charts
+                        st.subheader("Corrosion Rate Distribution (mm/year)")
                         st.bar_chart(matched_df["Corrosion_Rate_mm_per_year"].dropna())
 
-                        st.subheader("Predicted Depth Distribution")
-                        st.bar_chart(matched_df["Predicted_Depth"].dropna())
+                        st.subheader(f"Predicted Depth Distribution in {future_year} (mm)")
+                        st.bar_chart(matched_df["Predicted_Depth_mm"].dropna())
 
-                        # Download report
+                        # Download
                         st.download_button(
                             label="Download Corrosion Rate & Prediction Report (CSV)",
                             data=matched_df.to_csv(index=False),
                             file_name="corrosion_rate_prediction_report.csv",
                             mime="text/csv"
                         )
+
                     else:
                         st.info("Run defect matching first to enable corrosion rate analysis.")
+
                 
-                #sub menu machine learning corrosion prediction
+                # Submenu Machine Learning Corrosion Prediction
                 with st.expander("Machine Learning Corrosion Prediction", expanded=False):
-                    st.write("This section uses a Random Forest regression model to predict future corrosion depth based on matched defect features.")
+                    st.write("This section uses a Random Forest regression model to predict future corrosion depth in mm based on matched defect features.")
 
                     if (
                         'defect_matching_results' in st.session_state
@@ -1341,38 +1381,44 @@ if uploaded_files:
                     ):
                         matched_df, _ = st.session_state.defect_matching_results
 
-                        # Ensure required columns exist and are numeric
+                        # Ensure required columns
                         required_cols = ["Year1", "Year2", "Depth1", "Depth2", "Width1", "Length1"]
                         for col in required_cols:
                             if col not in matched_df.columns:
-                                st.warning(f"Matched defects must include column: {col}")
+                                st.warning(f"Missing required column: {col}")
                                 st.stop()
                             matched_df[col] = pd.to_numeric(matched_df[col], errors="coerce")
 
-                        # Add a time difference feature
-                        matched_df["Years_Elapsed"] = matched_df["Year2"] - matched_df["Year1"]
+                        # Handle missing Depth1 and Depth2
+                        matched_df["Depth1"].fillna(1, inplace=True)
+                        matched_df["Depth2"].fillna(1, inplace=True)
 
-                        # Prepare features and target
-                        feature_cols = ["Depth1", "Width1", "Length1", "Years_Elapsed"]
-                        X = matched_df[feature_cols].dropna()
-                        y = matched_df.loc[X.index, "Depth2"]
+                        # User pipe thickness (mm)
+                        pipe_thickness = st.number_input("Pipe Wall Thickness (mm)", min_value=1.0, value=12.7, step=0.1)
+
+                        # Convert depth from percent to mm
+                        #matched_df["Depth1_mm"] = (matched_df["Depth1"] / 100.0) * pipe_thickness
+                        #matched_df["Depth2_mm"] = (matched_df["Depth2"] / 100.0) * pipe_thickness
+
+                        # Feature engineering
+                        matched_df["Years_Elapsed"] = matched_df["Year2"] - matched_df["Year1"]
+                        features = ["Depth1_mm", "Width1", "Length1", "Years_Elapsed"]
+                        X = matched_df[features].dropna()
+                        y = matched_df.loc[X.index, "Depth2_mm"]
 
                         if len(X) < 10:
-                            st.info("Not enough matched records for ML training. At least 10 required.")
+                            st.info("Not enough data for ML training. At least 10 records required.")
                             st.stop()
 
                         # Train/test split
                         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-
-                        # Train Random Forest
                         rf = RandomForestRegressor(n_estimators=100, random_state=42)
                         rf.fit(X_train, y_train)
                         y_pred = rf.predict(X_test)
 
-                        # Show metrics
-                        st.write(f"**MAE:** {mean_absolute_error(y_test, y_pred):.3f} | **R²:** {r2_score(y_test, y_pred):.3f}")
+                        st.write(f"**MAE:** {mean_absolute_error(y_test, y_pred):.3f} mm | **R²:** {r2_score(y_test, y_pred):.3f}")
 
-                        # Predict for user-selected future year
+                        # Future year prediction
                         future_year = st.number_input(
                             "Predict corrosion depth for year (ML):",
                             min_value=int(matched_df["Year2"].max()) + 1,
@@ -1380,39 +1426,46 @@ if uploaded_files:
                             step=1,
                         )
 
-                        # Future prediction input
-                        pred_X = matched_df[["Depth1", "Width1", "Length1", "Year1"]].copy()
+                        pred_X = matched_df[["Depth1_mm", "Width1", "Length1", "Year1"]].copy()
                         pred_X["Years_Elapsed"] = future_year - pred_X["Year1"]
-                        pred_X = pred_X[["Depth1", "Width1", "Length1", "Years_Elapsed"]]  # reorder to match model
+                        pred_X = pred_X[["Depth1_mm", "Width1", "Length1", "Years_Elapsed"]]
 
-                        pred_depth = rf.predict(pred_X)
-                        matched_df["ML_Predicted_Depth"] = pred_depth
+                        pred_depth_mm = rf.predict(pred_X)
+                        matched_df["ML_Predicted_Depth_mm"] = pred_depth_mm
 
-                        # Show prediction table
-                        st.subheader(f"Predicted Depths for {future_year} (ML)")
+                        # Calculate corrosion rate and remaining life
+                        matched_df["ML_Corrosion_Rate_mm_per_year"] = (matched_df["ML_Predicted_Depth_mm"] - matched_df["Depth1_mm"]) / matched_df["Years_Elapsed"]
+                        matched_df["ML_Remaining_Life_years"] = (pipe_thickness - matched_df["ML_Predicted_Depth_mm"]) / matched_df["ML_Corrosion_Rate_mm_per_year"]
+                        matched_df["ML_Remaining_Life_years"] = matched_df["ML_Remaining_Life_years"].apply(lambda x: max(x, 0))  # cap negatives
+
+                        # Show output
+                        st.subheader(f"Predicted Corrosion Depths for {future_year} (mm)")
                         st.dataframe(
-                            matched_df[
-                                ["Year2", "Depth2", "ML_Predicted_Depth"]
-                            ],
+                            matched_df[["Year2", "Depth2", "Depth2_mm", "ML_Predicted_Depth_mm", "ML_Corrosion_Rate_mm_per_year", "ML_Remaining_Life_years"]],
                             use_container_width=True
                         )
 
-                        # Plot distribution
-                        st.subheader("ML Predicted Depth Distribution")
-                        st.bar_chart(matched_df["ML_Predicted_Depth"].dropna())
+                        # Plot
+                        st.subheader("ML Predicted Depth Distribution (mm)")
+                        st.bar_chart(matched_df["ML_Predicted_Depth_mm"].dropna())
 
-                        # Download report
+                        # Show minimum remaining life
+                        if not matched_df["ML_Remaining_Life_years"].dropna().empty:
+                            valid_life = matched_df[matched_df["ML_Remaining_Life_years"] > 0]["ML_Remaining_Life_years"]
+                            if not valid_life.empty:
+                                st.metric("Minimum Remaining Life (ML)", f"{valid_life.min():.2f} years")
+
+                        # Download
                         st.download_button(
                             label="Download ML Corrosion Prediction Report (CSV)",
                             data=matched_df.to_csv(index=False),
                             file_name="ml_corrosion_prediction_report.csv",
                             mime="text/csv"
                         )
-
                     else:
                         st.info("Run defect matching first to enable ML corrosion prediction.")
                 
-                #sub menu burst pressure cga and thinning mechanism cga
+                # Sub menu: Burst Pressure CGA
                 with st.expander("Burst Pressure CGA", expanded=False):
                     st.write("This section estimates remaining life based on predicted corrosion growth and API 579 burst pressure assessment.")
 
@@ -1445,22 +1498,25 @@ if uploaded_files:
                             SMYS = st.number_input("Specified Minimum Yield Strength (SMYS) [psi]", min_value=10000, value=52000, key="burst_sm")
                             safety_factor = st.number_input("Safety Factor", min_value=1.0, max_value=2.0, value=1.1, step=0.05, key="burst_sf")
 
-                            run_cga = st.form_submit_button("Run CGA Analysis")
+                            run_cga = st.form_submit_button("Run Burst Pressure Analysis")
 
                         if run_cga:
                             # Convert D and t to inches
                             D = D_mm / 25.4
                             t = t_mm / 25.4
 
+                            # Convert depth from percent to mm
+                            df["Depth2_mm"] = df["Depth2"] * t_mm / 100
+
                             # Feature engineering
                             df["aspect_ratio"] = df["Length2"] / df["Width2"]
-                            df["volumetric_loss"] = df["Length2"] * df["Width2"] * df["Depth2"]
-                            df["depth_ratio"] = df["Depth2"] / t_mm
+                            df["volumetric_loss"] = df["Length2"] * df["Width2"] * df["Depth2_mm"]
+                            df["depth_ratio"] = df["Depth2_mm"] / t_mm
                             df["pressure"] = 50  # Placeholder
                             df["coating_age"] = np.random.randint(0, 20, len(df))
 
                             # Model growth rate (simulated target)
-                            feature_cols = ["Length2", "Width2", "Depth2", "pressure", "coating_age",
+                            feature_cols = ["Length2", "Width2", "Depth2_mm", "pressure", "coating_age",
                                             "aspect_ratio", "volumetric_loss", "depth_ratio"]
                             X = df[feature_cols]
                             y = np.abs(np.random.normal(0.2, 0.05, len(df)))  # Simulated growth
@@ -1481,7 +1537,7 @@ if uploaded_files:
                             # Remaining life simulation
                             remaining_lives = []
                             for idx, row in df.iterrows():
-                                current_depth_mm = row["Depth2"]
+                                current_depth_mm = row["Depth2_mm"]
                                 growth_rate_mm = growth_pred[idx]
                                 life = 50  # max years
 
@@ -1499,11 +1555,23 @@ if uploaded_files:
                             df["Remaining_Life"] = remaining_lives
 
                             st.subheader("Remaining Life Prediction (API 579)")
-                            st.dataframe(df[["Depth2", "Predicted_Growth_Rate", "Remaining_Life"]], use_container_width=True)
+                            st.caption("Note: Depth2 was converted from percent to mm using wall thickness.")
+                            st.dataframe(df[["Depth2_mm", "Predicted_Growth_Rate", "Remaining_Life"]]
+                                        .rename(columns={
+                                            "Depth2_mm": "Depth2 (mm)",
+                                            "Predicted_Growth_Rate": "Growth Rate (mm/yr)",
+                                            "Remaining_Life": "Remaining Life (yrs)"
+                                        }),
+                                        use_container_width=True)
+                            
+                            # Show minimum remaining life
+                            st.metric("Minimum Remaining Life (Burst Pressure)", f"{df["Remaining_Life"].min():.2f} years")
 
                             st.subheader("Remaining Life Distribution")
                             fig = px.histogram(df, x="Remaining_Life", nbins=20, title="Remaining Life (years)")
                             st.plotly_chart(fig, use_container_width=True)
+
+                            st.session_state.burst_cga_results = df
 
                             st.download_button(
                                 label="Download Burst Pressure CGA Report (CSV)",
@@ -1517,6 +1585,8 @@ if uploaded_files:
                     else:
                         st.info("Run defect matching first to enable CGA analysis.")
 
+                
+                # sub menu thinning mechanism cga
                 with st.expander("Thinning Mechanism CGA", expanded=False):
                     st.write("This section calculates remaining life for each matched defect based on wall thinning, using hoop stress and minimum wall thickness criteria.")
 
@@ -1530,7 +1600,7 @@ if uploaded_files:
 
                         with st.form("thinning_form"):
                             st.subheader("Pipeline Parameters (Thinning)")
-                            D_mm = st.number_input("Pipe Diameter D (mm)", min_value=100.0, value=inside_diameter_mm, key="thin_d") #later will be converted to inches
+                            D_mm = st.number_input("Pipe Diameter D (mm)", min_value=100.0, value=inside_diameter_mm, key="thin_d")
                             t_current_mm = st.number_input("Current Wall Thickness t (mm)", min_value=1.0, value=12.7, key="thin_t")
                             t_min_mm = st.number_input("Minimum Required Thickness t_min (mm)", min_value=1.0, value=6.35, key="thin_t_min")
                             P = st.number_input("Operating Pressure P [psi]", min_value=100, value=1000, key="thin_p")
@@ -1541,11 +1611,10 @@ if uploaded_files:
                             flow_rate = st.number_input("Flow Rate (m/s)", value=10.0, key="thin_flow")
                             coating_age = st.slider("Coating Age (years)", min_value=0, max_value=30, value=10, key="thin_coating")
 
-                            # Submit button — nothing runs until this is clicked
                             run_thinning = st.form_submit_button("Run Thinning Analysis")
 
                         if run_thinning:
-                            # Convert dimensions to inches
+                            # Convert to inches
                             D = D_mm / 25.4
                             t_current = t_current_mm / 25.4
                             t_min = t_min_mm / 25.4
@@ -1571,36 +1640,180 @@ if uploaded_files:
                             # Predict thinning rate
                             X_test = df[feature_cols]
                             thinning_rate = model.predict(X_test)
-                            thinning_rate = np.clip(thinning_rate, 0.005, 0.05)  # Clamp for realism
+                            thinning_rate = np.clip(thinning_rate, 0.005, 0.05)
 
-                            # Calculate results
+                            # Convert Depth2 to wall loss (mm and inches)
+                            df["Depth2_mm"] = df["Depth2"] * t_current_mm / 100
+                            df["Depth2_in"] = df["Depth2_mm"] / 25.4
+
+                            # Adjust t_current per defect
+                            df["t_current_local"] = t_current - df["Depth2_in"]
+                            df["t_current_local"] = df["t_current_local"].clip(lower=0.01)
+
+                            # Final thinning calculations
                             df["Thinning_Rate_in_per_year"] = thinning_rate
-                            df["Remaining_Life_years"] = (t_current - t_min) / thinning_rate
-                            df["Wall_Thickness_EOL"] = t_current - df["Thinning_Rate_in_per_year"] * df["Remaining_Life_years"]
+                            df["Remaining_Life_years"] = (df["t_current_local"] - t_min) / thinning_rate
+                            df["Wall_Thickness_EOL"] = df["t_current_local"] - df["Thinning_Rate_in_per_year"] * df["Remaining_Life_years"]
                             df["Hoop_Stress_EOL_psi"] = (P * D) / (2 * df["Wall_Thickness_EOL"])
                             df["Hoop_Stress_Exceeded"] = df["Hoop_Stress_EOL_psi"] > allowable_stress
 
-                            # Display
+                            # Display results
                             st.subheader("Thinning Analysis Results (per defect)")
                             display_cols = [
-                                "Depth2", "Thinning_Rate_in_per_year", "Remaining_Life_years",
+                                "Depth2", "Depth2_mm", "Thinning_Rate_in_per_year", "Remaining_Life_years",
                                 "Wall_Thickness_EOL", "Hoop_Stress_EOL_psi", "Hoop_Stress_Exceeded"
                             ]
                             st.dataframe(df[display_cols].round(3), use_container_width=True)
 
+                            st.session_state.thinning_cga_results = df
+
+                            # Show minimum remaining life
+                            st.metric("Minimum Remaining Life (Thinning Mechanism)", f"{df["Remaining_Life_years"].min():.2f} years")
+
                             # Export
                             st.download_button(
                                 label="Download Thinning CGA Report (CSV)",
-                                data=df[display_cols + ["Depth2"]].to_csv(index=False),
+                                data=df[display_cols].to_csv(index=False),
                                 file_name="thinning_cga_per_defect.csv",
                                 mime="text/csv"
                             )
                         else:
                             st.info("Adjust pipeline and operating conditions, then click the button to run thinning analysis.")
-
                     else:
                         st.warning("Defect matching data not found. Please run defect matching first.")
-        
+                # Sub menu: Summary of Minimum Remaining Life
+                with st.expander("Summary of Minimum Remaining Life", expanded=False):
+                    st.write("This section summarizes the minimum remaining life predictions from all analysis methods for easy comparison.")
+                    
+                    # Initialize data storage for our summary
+                    summary_data = {
+                        "Analysis Method": [],
+                        "Minimum Remaining Life (years)": [],
+                        "Status": []
+                    }
+                    
+                    # Check and collect data from Linear Corrosion Rate analysis
+                    if 'defect_matching_results' in st.session_state and st.session_state.defect_matching_results is not None:
+                        matched_df, _ = st.session_state.defect_matching_results
+                        
+                        # Linear method
+                        if "Remaining_Years" in matched_df.columns:
+                            valid_life_values = matched_df["Remaining_Years"]
+                            valid_life_values = valid_life_values[valid_life_values > 0]
+                            
+                            if not valid_life_values.empty:
+                                min_remaining_life = valid_life_values.min()
+                                summary_data["Analysis Method"].append("Linear Corrosion Rate")
+                                summary_data["Minimum Remaining Life (years)"].append(round(min_remaining_life, 2))
+                                
+                                # Add status based on remaining life
+                                if min_remaining_life < 5:
+                                    summary_data["Status"].append("Critical")
+                                elif min_remaining_life < 10:
+                                    summary_data["Status"].append("Warning")
+                                else:
+                                    summary_data["Status"].append("Good")
+                            else:
+                                summary_data["Analysis Method"].append("Linear Corrosion Rate")
+                                summary_data["Minimum Remaining Life (years)"].append("N/A")
+                                summary_data["Status"].append("No Data")
+                        
+                        # ML method
+                        if "ML_Remaining_Life_years" in matched_df.columns:
+                            valid_life = matched_df[matched_df["ML_Remaining_Life_years"] > 0]["ML_Remaining_Life_years"]
+                            if not valid_life.empty:
+                                min_ml_life = valid_life.min()
+                                summary_data["Analysis Method"].append("Machine Learning")
+                                summary_data["Minimum Remaining Life (years)"].append(round(min_ml_life, 2))
+                                
+                                # Add status based on remaining life
+                                if min_ml_life < 5:
+                                    summary_data["Status"].append("Critical")
+                                elif min_ml_life < 10:
+                                    summary_data["Status"].append("Warning")
+                                else:
+                                    summary_data["Status"].append("Good")
+                            else:
+                                summary_data["Analysis Method"].append("Machine Learning")
+                                summary_data["Minimum Remaining Life (years)"].append("N/A")
+                                summary_data["Status"].append("No Data")
+                    
+                    # Burst Pressure CGA results
+                    if 'burst_cga_results' in st.session_state and st.session_state.burst_cga_results is not None:
+                        df = st.session_state.burst_cga_results
+                        if "Remaining_Life" in df.columns and not df.empty:
+                            min_burst_life = df["Remaining_Life"].min()
+                            summary_data["Analysis Method"].append("Burst Pressure CGA")
+                            summary_data["Minimum Remaining Life (years)"].append(round(min_burst_life, 2))
+                            
+                            # Add status based on remaining life
+                            if min_burst_life < 5:
+                                summary_data["Status"].append("Critical")
+                            elif min_burst_life < 10:
+                                summary_data["Status"].append("Warning")
+                            else:
+                                summary_data["Status"].append("Good")
+                        else:
+                            summary_data["Analysis Method"].append("Burst Pressure CGA")
+                            summary_data["Minimum Remaining Life (years)"].append("N/A")
+                            summary_data["Status"].append("No Data")
+                    
+                    # Thinning Mechanism CGA results
+                    if 'thinning_cga_results' in st.session_state and st.session_state.thinning_cga_results is not None:
+                        df = st.session_state.thinning_cga_results
+                        if "Remaining_Life_years" in df.columns and not df.empty:
+                            min_thinning_life = df["Remaining_Life_years"].min()
+                            summary_data["Analysis Method"].append("Thinning Mechanism CGA")
+                            summary_data["Minimum Remaining Life (years)"].append(round(min_thinning_life, 2))
+                            
+                            # Add status based on remaining life
+                            if min_thinning_life < 5:
+                                summary_data["Status"].append("Critical")
+                            elif min_thinning_life < 10:
+                                summary_data["Status"].append("Warning")
+                            else:
+                                summary_data["Status"].append("Good")
+                        else:
+                            summary_data["Analysis Method"].append("Thinning Mechanism CGA")
+                            summary_data["Minimum Remaining Life (years)"].append("N/A")
+                            summary_data["Status"].append("No Data")
+                    
+                    # Create and display summary DataFrame
+                    if summary_data["Analysis Method"]:
+                        summary_df = pd.DataFrame(summary_data)
+                        
+                        # Display the summary table
+                        st.subheader("Comparison of Minimum Remaining Life Predictions")
+                        st.dataframe(summary_df, use_container_width=True)
+                        
+                        # Add visualization if there's data
+                        valid_data = [x for x in summary_data["Minimum Remaining Life (years)"] if isinstance(x, (int, float))]
+                        if valid_data:
+                            
+                            # Find overall minimum remaining life across all methods
+                            overall_min = min(valid_data)
+                            st.metric("Overall Minimum Remaining Life", f"{overall_min:.2f} years")
+                            
+                            # Add recommendation based on overall minimum
+                            st.subheader("Recommendation")
+                            if overall_min < 5:
+                                st.error("Critical: Immediate inspection or replacement recommended within 1 year.")
+                            elif overall_min < 10:
+                                st.warning("Warning: Schedule inspection or maintenance within 2-3 years.")
+                            else:
+                                st.success("Good: Regular monitoring recommended, no immediate action required.")
+                        
+                        # Add download button for the summary
+                        st.download_button(
+                            label="Download Remaining Life Summary (CSV)",
+                            data=summary_df.to_csv(index=False),
+                            file_name="remaining_life_summary.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.info("Run at least one analysis method to generate a minimum remaining life summary.")
+
+
         else:
             st.warning("Please upload at least two Excel files to enable comparative analysis.")
             
