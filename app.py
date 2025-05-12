@@ -1185,6 +1185,17 @@ if uploaded_files:
                                     st.info("No matched defects found with the selected tolerance.")
 
                                 st.write(f"**Matching tolerance:** {defect_tol_pct*100:.1f}% (affects both width and length) + {pos_tol:.1f}% (affects both distance and orientation)")
+                                total = len(matched_df) + len(unmatched_df)
+                                if total > 0:
+                                    pct_matched = 100 * len(matched_df) / total
+                                    pct_unmatched = 100 * len(unmatched_df) / total
+                                    st.markdown(
+                                        f"**Persentase Matched:** {pct_matched:.1f}% ({len(matched_df)}) &nbsp;&nbsp;|&nbsp;&nbsp; "
+                                        f"**Persentase Unmatched:** {pct_unmatched:.1f}% ({len(unmatched_df)})"
+                                    )
+                                else:
+                                    st.info("Tidak ada data defect yang bisa dihitung persentasenya.")
+
                             
                             matched_df, unmatched_df = st.session_state["defect_matching_results_rule"]
 
@@ -1284,6 +1295,17 @@ if uploaded_files:
                     #save to st.state
 
                     st.session_state["defect_matching_results_siamese"] = (matched_df, unmatched_df)
+
+                    total = len(matched_df) + len(unmatched_df)
+                    if total > 0:
+                        pct_matched = 100 * len(matched_df) / total
+                        pct_unmatched = 100 * len(unmatched_df) / total
+                        st.markdown(
+                            f"**Persentase Matched:** {pct_matched:.1f}% ({len(matched_df)}) &nbsp;&nbsp;|&nbsp;&nbsp; "
+                            f"**Persentase Unmatched:** {pct_unmatched:.1f}% ({len(unmatched_df)})"
+                        )
+                    else:
+                        st.info("Tidak ada data defect yang bisa dihitung persentasenya.")
 
                     # 7. Download button
                     st.download_button(
