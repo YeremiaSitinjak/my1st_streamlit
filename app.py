@@ -17,6 +17,7 @@ from matplotlib.collections import PatchCollection
 from matplotlib.patches import Rectangle
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.model_selection import GridSearchCV
 
 # Initialize session state for segmented analysis
 if 'segmented_results' not in st.session_state:
@@ -489,6 +490,56 @@ def detect_outliers_by_segment(historical_data, segments, contamination=None):
     
     return combined_df, segment_stats_df
 
+#cache run ml corrosion prediction
+@st.cache_data
+def run_ml_corrosion_prediction(X_train, y_train, X_test, param_grid):
+    rf = RandomForestRegressor(random_state=42)
+    grid_search = GridSearchCV(rf, param_grid, cv=5, scoring='r2', n_jobs=-1)
+    grid_search.fit(X_train, y_train)
+    best_rf = grid_search.best_estimator_
+    y_pred = best_rf.predict(X_test)
+    return best_rf, y_pred, grid_search.best_params_
+
+#cache run rule based defect matching
+@st.cache_data
+def cached_rule_based_defect_matching(historical_data, defect_tol_pct, pos_tol):
+    matched_rows = []
+    unmatched_rows = []
+    years = sorted(historical_data.keys())
+    for i, year in enumerate(years[:-1]):
+        df1 = historical_data[year]
+        df2 = historical_data[years[i+1]]
+        anomalies1 = df1[df1["component/anomaly type"].str.contains("anomaly", case=False, na=False)].copy()
+        anomalies2 = df2[df2["component/anomaly type"].str.contains("anomaly", case=False, na=False)].copy()
+
+        for idx1, row1 in anomalies1.iterrows():
+            width_tol = row1["width [mm]"] * defect_tol_pct
+            length_tol = row1["length [mm]"] * defect_tol_pct
+            matches = anomalies2[
+                (abs(anomalies2["width [mm]"] - row1["width [mm]"]) <= width_tol) &
+                (abs(anomalies2["length [mm]"] - row1["length [mm]"]) <= length_tol) &
+                (abs(anomalies2["log distance [m]"] - row1["log distance [m]"]) <= pos_tol) &
+                (abs(anomalies2["clock orientation"] - row1["clock orientation"]) <= pos_tol)
+            ]
+            if not matches.empty:
+                for idx2, row2 in matches.iterrows():
+                    matched_rows.append({
+                        "Year1": year, "Index1": idx1, "Distance1": row1["log distance [m]"], "Orientation1": row1["clock orientation"],
+                        "Width1": row1["width [mm]"], "Length1": row1["length [mm]"],"Depth1": row1.get("depth [%]", np.nan),
+                        "Year2": years[i+1], "Index2": idx2, "Distance2": row2["log distance [m]"], "Orientation2": row2["clock orientation"],
+                        "Width2": row2["width [mm]"], "Length2": row2["length [mm]"],"Depth2": row2.get("depth [%]", np.nan)
+                    })
+            else:
+                unmatched_rows.append({
+                    "Year": year, "Index": idx1, "Distance": row1["log distance [m]"], "Orientation": row1["clock orientation"],
+                    "Width": row1["width [mm]"], "Length": row1["length [mm]"],"Depth": row1.get("depth [%]", np.nan)
+                })
+
+    matched_df = pd.DataFrame(matched_rows)
+    unmatched_df = pd.DataFrame(unmatched_rows)
+    return matched_df, unmatched_df
+
+
 # Visualization functions for segmented analysis
 def plot_segment_outlier_summary(segment_stats_df):
     """Plot a summary of outliers by segment."""
@@ -588,12 +639,12 @@ if uploaded_files:
                 st.session_state.historical_data = historical_data
         
         # Create tabs for different analyses
-        tab1, tab2, tab3, tab4, tab5= st.tabs([
+        tab1, tab2, tab3, tab4= st.tabs([
             "📊 Overview",
             "🔧 Data Analysis", 
             "🔎 ILI Data Matching", 
             "🛡️ ILI Corrosion Rate & Prediction",
-            "📈 Statistical Tests",
+            #"📈 Statistical Tests",
         ])
         
         # Tab 1: Data Overview
@@ -724,25 +775,25 @@ if uploaded_files:
 
                 # Add rectangles for each anomaly
                 shapes = []
-                for _, row in anomaly_df.iterrows():
-                    x = row["log distance [m]"]
-                    y = row["clock orientation"]
-                    length = row.get("length [mm]", 0) / 1000 if pd.notnull(row.get("length [mm]", 0)) else 0
-                    width_mm = row.get("width [mm]", 0) if pd.notnull(row.get("width [mm]", 0)) else 0
-                    width_deg = mm_to_deg(width_mm, inside_diameter_mm)
-                    x0 = x - length/2
-                    x1 = x + length/2
-                    y0 = y - width_deg/2
-                    y1 = y + width_deg/2
-                    shapes.append(dict(
-                        type="rect",
-                        xref="x", yref="y",
-                        x0=x0, x1=x1,
-                        y0=y0, y1=y1,
-                        line=dict(color="red"),
-                        fillcolor="rgba(0,0,0,0)",
-                        layer="above"
-                    ))
+                # for _, row in anomaly_df.iterrows():
+                #     x = row["log distance [m]"]
+                #     y = row["clock orientation"]
+                #     length = row.get("length [mm]", 0) / 1000 if pd.notnull(row.get("length [mm]", 0)) else 0
+                #     width_mm = row.get("width [mm]", 0) if pd.notnull(row.get("width [mm]", 0)) else 0
+                #     width_deg = mm_to_deg(width_mm, inside_diameter_mm)
+                #     x0 = x - length/2
+                #     x1 = x + length/2
+                #     y0 = y - width_deg/2
+                #     y1 = y + width_deg/2
+                #     shapes.append(dict(
+                #         type="rect",
+                #         xref="x", yref="y",
+                #         x0=x0, x1=x1,
+                #         y0=y0, y1=y1,
+                #         line=dict(color="red"),
+                #         fillcolor="rgba(0,0,0,0)",
+                #         layer="above"
+                #     ))
 
                 # Add range slider for interactive zooming
                 #fig.update_xaxes(
@@ -811,168 +862,168 @@ if uploaded_files:
         if len(historical_data) > 1:
             # Tab 3: Outlier Analysis
             with tab3:                  
-                #sub menu global isolation forest anomaly matching
-                with st.expander("Isolation Forest Anomaly Matching", expanded=False):
+                # #sub menu global isolation forest anomaly matching
+                # with st.expander("Isolation Forest Anomaly Matching", expanded=False):
                     
-                    st.subheader("Anomaly Matching Across Years")
-                    contamination_table = pd.DataFrame({
-                        "Contamination Value": ["0.01 (1%)", "0.03 (3%)", "0.05 (5%)", "0.10 (10%)"],
-                        "Effect": [
-                            "✅ Very strict: Only extreme anomalies are flagged",
-                            "⚖️ Balanced: Moderate number of anomalies detected",
-                            "🔍 Detects more anomalies: Some slight variations flagged",
-                            "❌ Highly sensitive: Even minor deviations are considered anomalies"
-                        ]
-                    })
-                    st.table(contamination_table)
+                #     st.subheader("Anomaly Matching Across Years")
+                #     contamination_table = pd.DataFrame({
+                #         "Contamination Value": ["0.01 (1%)", "0.03 (3%)", "0.05 (5%)", "0.10 (10%)"],
+                #         "Effect": [
+                #             "✅ Very strict: Only extreme anomalies are flagged",
+                #             "⚖️ Balanced: Moderate number of anomalies detected",
+                #             "🔍 Detects more anomalies: Some slight variations flagged",
+                #             "❌ Highly sensitive: Even minor deviations are considered anomalies"
+                #         ]
+                #     })
+                #     st.table(contamination_table)
                     
-                    if st.button("Run Global Isolation Forest"):
-                        st.session_state.run_global_isolation = True
+                #     if st.button("Run Global Isolation Forest"):
+                #         st.session_state.run_global_isolation = True
                     
-                    if st.session_state.run_global_isolation:
-                        with st.spinner(f"Running Isolation Forest with contamination={contamination}... Please wait."):
-                            combined_df = detect_outliers_across_years(historical_data, contamination)
-                            combined_df = classify_anomalies(combined_df)
+                #     if st.session_state.run_global_isolation:
+                #         with st.spinner(f"Running Isolation Forest with contamination={contamination}... Please wait."):
+                #             combined_df = detect_outliers_across_years(historical_data, contamination)
+                #             combined_df = classify_anomalies(combined_df)
                         
-                        col1, col2 = st.columns(2)
+                #         col1, col2 = st.columns(2)
                         
-                        with col1:
-                            st.subheader("Most Outlier-Heavy Year")
-                            plot_most_outliers(combined_df)
+                #         with col1:
+                #             st.subheader("Most Outlier-Heavy Year")
+                #             plot_most_outliers(combined_df)
                         
-                        with col2:
-                            st.subheader("Outlier Trends")
-                            plot_outlier_trends(combined_df)
+                #         with col2:
+                #             st.subheader("Outlier Trends")
+                #             plot_outlier_trends(combined_df)
                         
-                        # Display summary table
-                        st.subheader("Outlier Summary by Year")
-                        summary_table = generate_outlier_summary(combined_df)
-                        st.dataframe(summary_table)
+                #         # Display summary table
+                #         st.subheader("Outlier Summary by Year")
+                #         summary_table = generate_outlier_summary(combined_df)
+                #         st.dataframe(summary_table)
                         
-                        # Add anomaly heatmap
-                        st.subheader("Anomaly Distribution")
-                        plot_anomaly_heatmap(combined_df)
+                #         # Add anomaly heatmap
+                #         st.subheader("Anomaly Distribution")
+                #         plot_anomaly_heatmap(combined_df)
                         
-                        # Add anomaly severity breakdown
-                        st.subheader("Anomaly Severity Breakdown")
-                        severity_counts = combined_df.groupby(["Year", "Anomaly_Severity"]).size().reset_index(name="Count")
-                        fig = px.bar(
-                            severity_counts, 
-                            x="Year", 
-                            y="Count", 
-                            color="Anomaly_Severity",
-                            title="Anomaly Severity by Year",
-                            barmode="group"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                #         # Add anomaly severity breakdown
+                #         st.subheader("Anomaly Severity Breakdown")
+                #         severity_counts = combined_df.groupby(["Year", "Anomaly_Severity"]).size().reset_index(name="Count")
+                #         fig = px.bar(
+                #             severity_counts, 
+                #             x="Year", 
+                #             y="Count", 
+                #             color="Anomaly_Severity",
+                #             title="Anomaly Severity by Year",
+                #             barmode="group"
+                #         )
+                #         st.plotly_chart(fig, use_container_width=True)
                         
-                        # Download button for outlier report
-                        st.subheader("Download Outlier Report")
-                        csv = combined_df.to_csv(index=False).encode('utf-8')
-                        st.download_button("Download Outlier Report", csv, "outliers_report.csv", "text/csv")
+                #         # Download button for outlier report
+                #         st.subheader("Download Outlier Report")
+                #         csv = combined_df.to_csv(index=False).encode('utf-8')
+                #         st.download_button("Download Outlier Report", csv, "outliers_report.csv", "text/csv")
                 
-                #sub menu isolation forest anomaly matching with segments
-                with st.expander("Isolation Forest Anomaly Matching within Segments", expanded=False):
-                    st.subheader("Segmented Anomaly Matching Analysis")
+                # #sub menu isolation forest anomaly matching with segments
+                # with st.expander("Isolation Forest Anomaly Matching within Segments", expanded=False):
+                #     st.subheader("Segmented Anomaly Matching Analysis")
                 
-                    st.write("""
-                    This analysis divides the pipe into segments based on weld positions and performs
-                    outlier detection within each segment.
-                    """)
+                #     st.write("""
+                #     This analysis divides the pipe into segments based on weld positions and performs
+                #     outlier detection within each segment.
+                #     """)
                     
-                    # Only create segments and run detection if not already in session state
-                    if st.session_state.segments is None:
-                        with st.spinner("Creating weld-based segments..."):
-                            st.session_state.segments = create_weld_based_segments(historical_data)
+                #     # Only create segments and run detection if not already in session state
+                #     if st.session_state.segments is None:
+                #         with st.spinner("Creating weld-based segments..."):
+                #             st.session_state.segments = create_weld_based_segments(historical_data)
                     
-                    segments = st.session_state.segments
+                #     segments = st.session_state.segments
                     
-                    # Check if segments were created
-                    has_segments = all(len(segs) > 0 for segs in segments.values())
+                #     # Check if segments were created
+                #     has_segments = all(len(segs) > 0 for segs in segments.values())
                     
-                    if not has_segments:
-                        st.warning("Not enough weld markers found to create segments. Check your data.")
-                    else:
-                        # Show segment overview
-                        st.subheader("Segment Overview")
+                #     if not has_segments:
+                #         st.warning("Not enough weld markers found to create segments. Check your data.")
+                #     else:
+                #         # Show segment overview
+                #         st.subheader("Segment Overview")
                     
-                    for year, year_segments in segments.items():
-                        segment_df = pd.DataFrame([
-                            {"Segment": seg_name, "Start (m)": round(start, 2), "End (m)": round(end, 2), 
-                            "Length (m)": round(end-start, 2)}
-                            for start, end, seg_name in year_segments
-                        ])
+                #     for year, year_segments in segments.items():
+                #         segment_df = pd.DataFrame([
+                #             {"Segment": seg_name, "Start (m)": round(start, 2), "End (m)": round(end, 2), 
+                #             "Length (m)": round(end-start, 2)}
+                #             for start, end, seg_name in year_segments
+                #         ])
                         
-                        st.markdown(f"### 📁 Year {year} — {len(year_segments)} segments")
-                        st.dataframe(segment_df, height=300)
+                #         st.markdown(f"### 📁 Year {year} — {len(year_segments)} segments")
+                #         st.dataframe(segment_df, height=300)
                     
-                    # Outlier detection settings
-                    st.subheader("Segment-Specific Outlier Detection")
+                #     # Outlier detection settings
+                #     st.subheader("Segment-Specific Outlier Detection")
                     
-                    segment_contamination = contamination
-                    st.info(f"Using global contamination value: {contamination}")
+                #     segment_contamination = contamination
+                #     st.info(f"Using global contamination value: {contamination}")
                     
-                    # Add a run analysis button to control when the expensive calculations happen
-                    run_analysis = st.button("Run Segmented Analysis",key=f"run_analysis_{year}") or st.session_state.segmented_results is not None
+                #     # Add a run analysis button to control when the expensive calculations happen
+                #     run_analysis = st.button("Run Segmented Analysis",key=f"run_analysis_{year}") or st.session_state.segmented_results is not None
                     
-                    if run_analysis:
-                        # Only run detection if not already in session state
-                        if st.session_state.segmented_results is None:
-                            with st.spinner("Running segmented outlier detection... (this may take a moment)"):
-                                combined_df, segment_stats_df = detect_outliers_by_segment(
-                                    historical_data, segments, 
-                                    segment_contamination
-                                )
-                                st.session_state.segmented_results = combined_df
-                                st.session_state.segment_stats = segment_stats_df
+                #     if run_analysis:
+                #         # Only run detection if not already in session state
+                #         if st.session_state.segmented_results is None:
+                #             with st.spinner("Running segmented outlier detection... (this may take a moment)"):
+                #                 combined_df, segment_stats_df = detect_outliers_by_segment(
+                #                     historical_data, segments, 
+                #                     segment_contamination
+                #                 )
+                #                 st.session_state.segmented_results = combined_df
+                #                 st.session_state.segment_stats = segment_stats_df
                         
-                        # Use the cached results for display
-                        combined_df = st.session_state.segmented_results
-                        segment_stats_df = st.session_state.segment_stats
+                #         # Use the cached results for display
+                #         combined_df = st.session_state.segmented_results
+                #         segment_stats_df = st.session_state.segment_stats
                         
-                        if len(segment_stats_df) > 0:
-                            # Display segment statistics
-                            st.subheader("Segment Statistics")
-                            st.dataframe(segment_stats_df)
+                #         if len(segment_stats_df) > 0:
+                #             # Display segment statistics
+                #             st.subheader("Segment Statistics")
+                #             st.dataframe(segment_stats_df)
                             
-                            # Plot summary
-                            st.subheader("Outlier Distribution by Segment")
-                            plot_segment_outlier_summary(segment_stats_df)
+                #             # Plot summary
+                #             st.subheader("Outlier Distribution by Segment")
+                #             plot_segment_outlier_summary(segment_stats_df)
                             
-                            # Explore individual segments - THIS SECTION WILL BE MUCH FASTER NOW
-                            st.subheader("Explore Individual Segments")
-                            col1, col2 = st.columns(2)
+                #             # Explore individual segments - THIS SECTION WILL BE MUCH FASTER NOW
+                #             st.subheader("Explore Individual Segments")
+                #             col1, col2 = st.columns(2)
                             
-                            with col1:
-                                selected_year = st.selectbox("Select Year", sorted(historical_data.keys()))
+                #             with col1:
+                #                 selected_year = st.selectbox("Select Year", sorted(historical_data.keys()))
                             
-                            with col2:
-                                year_segments = [seg[2] for seg in segments[selected_year]]
-                                selected_segment = st.selectbox("Select Segment", ["All Segments"] + year_segments)
+                #             with col2:
+                #                 year_segments = [seg[2] for seg in segments[selected_year]]
+                #                 selected_segment = st.selectbox("Select Segment", ["All Segments"] + year_segments)
                             
-                            # This function only filters existing data, doesn't rerun the analysis
-                            filter_and_display_segment(combined_df, selected_year, selected_segment)
+                #             # This function only filters existing data, doesn't rerun the analysis
+                #             filter_and_display_segment(combined_df, selected_year, selected_segment)
                             
-                            # Plot for all years
-                            st.subheader("Outlier Distribution Across All Years")
-                            fig = px.scatter(
-                                combined_df,
-                                x="log distance [m]",
-                                y="clock orientation",
-                                color="Outlier",
-                                title="Outlier Distribution Across All Years",
-                                color_discrete_map={"Yes": "blue", "No": "red"},
-                                hover_data=["Outlier_Score", "component/anomaly type","Year"]
-                            )
-                            fig.update_traces(marker=dict(size=5))
-                            st.plotly_chart(fig, use_container_width=True,key=f"segment_plot_allyears")
+                #             # Plot for all years
+                #             st.subheader("Outlier Distribution Across All Years")
+                #             fig = px.scatter(
+                #                 combined_df,
+                #                 x="log distance [m]",
+                #                 y="clock orientation",
+                #                 color="Outlier",
+                #                 title="Outlier Distribution Across All Years",
+                #                 color_discrete_map={"Yes": "blue", "No": "red"},
+                #                 hover_data=["Outlier_Score", "component/anomaly type","Year"]
+                #             )
+                #             fig.update_traces(marker=dict(size=5))
+                #             st.plotly_chart(fig, use_container_width=True,key=f"segment_plot_allyears")
 
-                            # Download segmented results
-                            st.subheader("Download Segmented Analysis")
-                            csv = combined_df.to_csv(index=False).encode('utf-8')
-                            st.download_button("Download Segmented Results", csv, "segmented_outliers.csv", "text/csv")
-                        else:
-                            st.warning("No valid segments found for analysis. Please check your data.")
+                #             # Download segmented results
+                #             st.subheader("Download Segmented Analysis")
+                #             csv = combined_df.to_csv(index=False).encode('utf-8')
+                #             st.download_button("Download Segmented Results", csv, "segmented_outliers.csv", "text/csv")
+                #         else:
+                #             st.warning("No valid segments found for analysis. Please check your data.")
 
                 
                 #sub menu ruled based defect matching
@@ -983,12 +1034,17 @@ if uploaded_files:
                         st.warning("Please upload and preprocess data first.")
                     else:
                         with st.form("rule_matching_form"):
-                            st.subheader("Defect Matching Controls")
-                            tolerance_pct = st.slider(
-                                "Matching Tolerance (%)", 
-                                0.0, 10.0, 5.0, 0.5,
-                                help="Maximum allowed difference in width/length between matched defects"
-                            ) / 100  # Convert to decimal
+                            st.subheader("Rule Based Defect Matching Controls")
+                            defect_tol_pct = st.slider(
+                                "Width/Length Tolerance (%)", 
+                                0.0, 15.0, 5.0, 0.5,
+                                help="Allowed percentage difference in width and length between matched defects"
+                            ) / 100
+                            pos_tol = st.slider(
+                                "Distance and Orientation Tolerance (%)", 
+                                0.0, 15.0, 5.0, 0.5,
+                                help="Allowed difference in log distance (meters) and clock orientation (degrees) between matched defects"
+                            )
                             run_matching = st.form_submit_button("Run Defect Matching")
 
                         if run_matching or st.session_state.defect_matching_results is not None:
@@ -1013,84 +1069,73 @@ if uploaded_files:
 
                                 # Find overlapping/matched defects between years
                                 # For simplicity, match each defect to the next year only
-                                matched_rows = []
-                                unmatched_rows = []
-                                years = sorted(all_anomalies["Year"].unique())
-                                for i, year in enumerate(years[:-1]):
-                                    df1 = all_anomalies[all_anomalies["Year"] == year]
-                                    df2 = all_anomalies[all_anomalies["Year"] == years[i+1]]
-                                    for idx1, row1 in df1.iterrows():
-                                        # Find matches in next year
-                                        width_tol = row1["width [mm]"] * tolerance_pct
-                                        length_tol = row1["length [mm]"] * tolerance_pct
-                                        matches = df2[
-                                            (abs(df2["width [mm]"] - row1["width [mm]"]) <= width_tol) &
-                                            (abs(df2["length [mm]"] - row1["length [mm]"]) <= length_tol) &
-                                            (abs(df2["log distance [m]"] - row1["log distance [m]"]) <= length_tol)
-                                        ]
-                                        if not matches.empty:
-                                            for idx2, row2 in matches.iterrows():
-                                                matched_rows.append({
-                                                    "Year1": year, "Index1": idx1, "Distance1": row1["log distance [m]"], "Orientation1": row1["clock orientation"],
-                                                    "Width1": row1["width [mm]"], "Length1": row1["length [mm]"],"Depth1": row1.get("depth [%]", np.nan),
-                                                    "Year2": years[i+1], "Index2": idx2, "Distance2": row2["log distance [m]"], "Orientation2": row2["clock orientation"],
-                                                    "Width2": row2["width [mm]"], "Length2": row2["length [mm]"],"Depth2": row2.get("depth [%]", np.nan) 
-                                                })
-                                        else:
-                                            unmatched_rows.append({
-                                                "Year": year, "Index": idx1, "Distance": row1["log distance [m]"], "Orientation": row1["clock orientation"],
-                                                "Width": row1["width [mm]"], "Length": row1["length [mm]"],"Depth": row1.get("depth [%]", np.nan)
-                                            })
+                                matched_df, unmatched_df = cached_rule_based_defect_matching(st.session_state.historical_data, defect_tol_pct, pos_tol)
+                                st.session_state["defect_matching_results_rule"] = (matched_df, unmatched_df)
 
-                                matched_df = pd.DataFrame(matched_rows)
-                                unmatched_df = pd.DataFrame(unmatched_rows)
-                                st.session_state.defect_matching_results = (matched_df, unmatched_df)
+                                # # Build the interactive plot
+                                # fig = go.Figure()
 
-                                # Build the interactive plot
-                                fig = go.Figure()
+                                # # Plot all boxes (unmatched: light red, matched: green)
+                                # for idx, row in all_anomalies.iterrows():
+                                #     length_m = row["length [mm]"] / 1000
+                                #     width_deg = mm_to_deg(row["width [mm]"], inside_diameter_mm)
+                                #     x0 = row["log distance [m]"] - length_m / 2
+                                #     x1 = row["log distance [m]"] + length_m / 2
+                                #     y0 = row["clock orientation"] - width_deg / 2
+                                #     y1 = row["clock orientation"] + width_deg / 2
+                                #     is_matched = (matched_df["Index1"] == idx).any() or (matched_df["Index2"] == idx).any()
+                                #     fillcolor = "rgba(44,160,44,0.5)" if is_matched else "rgba(255,99,71,0.4)"
+                                #     fig.add_shape(
+                                #         type="rect",
+                                #         x0=x0, x1=x1, y0=y0, y1=y1,
+                                #         line=dict(color="green" if is_matched else "red", width=2),
+                                #         fillcolor=fillcolor,
+                                #         layer="above"
+                                #     )
+                                #     # Add invisible scatter point to enable hover
+                                #     hover_text = (
+                                #         f"Year: {row['Year']}<br>"
+                                #         f"Distance: {row['log distance [m]']:.2f} m<br>"
+                                #         f"Orientation: {row['clock orientation']}°<br>"
+                                #         f"Width: {row['width [mm]']} mm<br>"
+                                #         f"Length: {row['length [mm]']} mm<br>"
+                                #         f"Depth: {row.get('depth [%]', 'N/A')}%<br>"
+                                #         f"Match: {'Yes' if is_matched else 'No'}"
+                                #     )
+                                #     fig.add_trace(go.Scatter(
+                                #         x=[row["log distance [m]"]],
+                                #         y=[row["clock orientation"]],
+                                #         mode="markers",
+                                #         marker=dict(size=10, color='rgba(0,0,0,0)'),  # invisible
+                                #         hoverinfo="text",
+                                #         hovertext=hover_text,
+                                #         showlegend=False
+                                #     ))
 
-                                # Plot all boxes (unmatched: light red, matched: green)
-                                for idx, row in all_anomalies.iterrows():
-                                    length_m = row["length [mm]"] / 1000
-                                    width_deg = mm_to_deg(row["width [mm]"], inside_diameter_mm)
-                                    x0 = row["log distance [m]"] - length_m / 2
-                                    x1 = row["log distance [m]"] + length_m / 2
-                                    y0 = row["clock orientation"] - width_deg / 2
-                                    y1 = row["clock orientation"] + width_deg / 2
-                                    is_matched = (matched_df["Index1"] == idx).any() or (matched_df["Index2"] == idx).any()
-                                    fillcolor = "rgba(44,160,44,0.5)" if is_matched else "rgba(255,99,71,0.4)"
-                                    fig.add_shape(
-                                        type="rect",
-                                        x0=x0, x1=x1, y0=y0, y1=y1,
-                                        line=dict(color="green" if is_matched else "red", width=2),
-                                        fillcolor=fillcolor,
-                                        layer="above"
-                                    )
+                                # # Legend
+                                # fig.add_trace(go.Scatter(
+                                #     x=[None], y=[None],
+                                #     mode='markers',
+                                #     marker=dict(color="rgba(44,160,44,0.5)", size=15, symbol='square'),
+                                #     name="Matched Defect"
+                                # ))
+                                # fig.add_trace(go.Scatter(
+                                #     x=[None], y=[None],
+                                #     mode='markers',
+                                #     marker=dict(color="rgba(255,99,71,0.4)", size=15, symbol='square'),
+                                #     name="Unmatched Defect"
+                                # ))
 
-                                # Legend
-                                fig.add_trace(go.Scatter(
-                                    x=[None], y=[None],
-                                    mode='markers',
-                                    marker=dict(color="rgba(44,160,44,0.5)", size=15, symbol='square'),
-                                    name="Matched Defect"
-                                ))
-                                fig.add_trace(go.Scatter(
-                                    x=[None], y=[None],
-                                    mode='markers',
-                                    marker=dict(color="rgba(255,99,71,0.4)", size=15, symbol='square'),
-                                    name="Unmatched Defect"
-                                ))
+                                # fig.update_layout(
+                                #     title="All Years Defect Matching",
+                                #     xaxis_title="Log Distance (m)",
+                                #     yaxis_title="Clock Orientation (deg)",
+                                #     showlegend=True,
+                                #     hovermode='closest',
+                                #     height=700
+                                # )
 
-                                fig.update_layout(
-                                    title="All Years Defect Matching",
-                                    xaxis_title="Log Distance (m)",
-                                    yaxis_title="Clock Orientation (deg)",
-                                    showlegend=True,
-                                    hovermode='closest',
-                                    height=700
-                                )
-
-                                st.plotly_chart(fig, use_container_width=True)
+                                # st.plotly_chart(fig, use_container_width=True)
 
                                 # Table of matched defects
                                 st.subheader("Matched Defects Table")
@@ -1139,8 +1184,114 @@ if uploaded_files:
                                 else:
                                     st.info("No matched defects found with the selected tolerance.")
 
-                                st.write(f"**Matching tolerance:** {tolerance_pct*100:.1f}% (affects both width and length)")
-                    
+                                st.write(f"**Matching tolerance:** {defect_tol_pct*100:.1f}% (affects both width and length) + {pos_tol:.1f}% (affects both distance and orientation)")
+                            
+                            matched_df, unmatched_df = st.session_state["defect_matching_results_rule"]
+
+                with st.expander("Siamese Defect Matching", expanded=False):
+                    st.subheader("Defect Matching Across Years using Siamese Neural Network to look for Feature Similarity")
+
+                    # 1. Gather all anomalies from all years
+                    all_anomalies = []
+                    for year, df in st.session_state.historical_data.items():
+                        anomalies = df[df["component/anomaly type"].str.contains("anomaly", case=False, na=False)].copy()
+                        anomalies["Year"] = year
+                        anomalies["SourceIndex"] = anomalies.index  # Save original index for merging later
+                        all_anomalies.append(anomalies)
+                    if not all_anomalies:
+                        st.warning("No anomalies found in the uploaded data.")
+                        st.stop()
+                    all_anomalies = pd.concat(all_anomalies, ignore_index=True)
+
+                    # 2. Select and clean features
+                    features = ["log distance [m]", "clock orientation", "width [mm]", "length [mm]"]
+                    for col in features:
+                        all_anomalies[col] = pd.to_numeric(all_anomalies[col], errors="coerce")
+                    all_anomalies = all_anomalies.dropna(subset=features)
+
+                    # 3. Normalize features
+                    scaler = StandardScaler()
+                    all_anomalies_norm = all_anomalies.copy()
+                    all_anomalies_norm[features] = scaler.fit_transform(all_anomalies[features])
+
+                    # 4. Apply custom weight to log distance to prioritize proximity
+                    st.markdown("**Log Distance Influence**  \n1 = Data can be matched even if they are farther apart  \n10 = Matched data must be physically close")
+                    distance_weight = st.slider("", 1.0, 10.0, 5.0, 0.5)
+                    all_anomalies_norm["log distance [m]"] *= distance_weight
+
+                    st.markdown("---")
+
+                    # 5. Siamese-like matching
+                    matched_rows = []
+                    unmatched_indices = set(all_anomalies_norm.index)
+                    years = sorted(all_anomalies_norm["Year"].unique())
+                    st.markdown("**Siamese Similarity**  \n0.10 = Very Strict (only nearly identical data are matched)  \n5.00 = Very Generous (large differences allowed)")
+                    distance_threshold = st.slider("", 0.1, 5.0, 1.0, 0.1)
+
+                    for i, year in enumerate(years[:-1]):
+                        df1 = all_anomalies_norm[all_anomalies_norm["Year"] == year]
+                        df2 = all_anomalies_norm[all_anomalies_norm["Year"] == years[i+1]]
+                        if df1.empty or df2.empty:
+                            continue
+                        nbrs = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(df2[features])
+                        distances, indices = nbrs.kneighbors(df1[features])
+                        for idx1, (dist, idx2) in enumerate(zip(distances.flatten(), indices.flatten())):
+                            if dist <= distance_threshold:
+                                orig_idx1 = df1.iloc[idx1].name
+                                orig_idx2 = df2.iloc[idx2].name
+                                row1 = all_anomalies.loc[orig_idx1]
+                                row2 = all_anomalies.loc[orig_idx2]
+                                matched_rows.append({
+                                    "Year1": row1["Year"], "Distance1": row1["log distance [m]"], "Orientation1": row1["clock orientation"],
+                                    "Width1": row1["width [mm]"], "Length1": row1["length [mm]"], "Depth1": row1.get("depth [%]", np.nan),
+                                    "Year2": row2["Year"], "Distance2": row2["log distance [m]"], "Orientation2": row2["clock orientation"],
+                                    "Width2": row2["width [mm]"], "Length2": row2["length [mm]"], "Depth2": row2.get("depth [%]", np.nan),
+                                    "Similarity_Distance": dist,
+                                    "Δ Distance [m]": abs(row1["log distance [m]"] - row2["log distance [m]"]),
+                                    "Match Status": "Matched"
+                                })
+                                unmatched_indices.discard(orig_idx1)
+                                unmatched_indices.discard(orig_idx2)
+
+                    matched_df = pd.DataFrame(matched_rows)
+                    st.dataframe(matched_df)
+
+
+                    # 5. Add unmatched anomalies
+                    unmatched_rows = []
+                    for idx in unmatched_indices:
+                        row = all_anomalies.loc[idx]
+                        unmatched_rows.append({
+                            "Year1": row["Year"], "Distance1": row["log distance [m]"], "Orientation1": row["clock orientation"],
+                            "Width1": row["width [mm]"], "Length1": row["length [mm]"], "Depth1": row.get("depth [%]", np.nan),
+                            "Year2": None, "Distance2": None, "Orientation2": None,
+                            "Width2": None, "Length2": None, "Depth2": None,
+                            "Similarity_Distance": None,
+                            "Match Status": "Unmatched"
+                        })
+                    unmatched_df = pd.DataFrame(unmatched_rows)
+
+                    # 6. Combine and display
+                    siamese_df = pd.DataFrame(matched_rows + unmatched_rows)
+                    display_cols = [
+                        "Year1", "Distance1", "Orientation1", "Width1", "Length1", "Depth1",
+                        "Year2", "Distance2", "Orientation2", "Width2", "Length2", "Depth2",
+                        "Similarity_Distance", "Match Status"
+                    ]
+                    st.write("**Defects matched across consecutive years using feature similarity (Siamese-style distance):**")
+                    st.dataframe(siamese_df[display_cols], use_container_width=True)
+
+                    #save to st.state
+
+                    st.session_state["defect_matching_results_siamese"] = (matched_df, unmatched_df)
+
+                    # 7. Download button
+                    st.download_button(
+                        label="Download Siamese Matching Report (CSV)",
+                        data=siamese_df[display_cols].to_csv(index=False),
+                        file_name="siamese_matching_full_report.csv",
+                        mime="text/csv"
+                    )
             
             # Tab 2: Weld Analysis
             with tab2:
@@ -1234,67 +1385,87 @@ if uploaded_files:
                             if unmatched_count > 0:
                                 st.write(f"Positions: {', '.join(map(lambda x: f'{x:.1f}m', unmatched))}")
             
-            # Tab 4: Statistical Tests
-            with tab5:
-                st.header("Statistical Analysis")
+            # # Tab 4: Statistical Tests
+            # with tab5:
+            #     st.header("Statistical Analysis")
                 
-                st.write("""
-                This tab shows statistical tests to compare distributions between consecutive years.
-                A p-value < 0.05 indicates that the distributions are significantly different.
-                """)
+            #     st.write("""
+            #     This tab shows statistical tests to compare distributions between consecutive years.
+            #     A p-value < 0.05 indicates that the distributions are significantly different.
+            #     """)
                 
-                compare_distributions(historical_data)
+            #     compare_distributions(historical_data)
                 
-                # Add visualization for total records by year
-                st.subheader("Total Records by Year")
-                records_by_year = {year: df.shape[0] for year, df in historical_data.items()}
-                records_df = pd.DataFrame(list(records_by_year.items()), columns=["Year", "Record Count"])
+            #     # Add visualization for total records by year
+            #     st.subheader("Total Records by Year")
+            #     records_by_year = {year: df.shape[0] for year, df in historical_data.items()}
+            #     records_df = pd.DataFrame(list(records_by_year.items()), columns=["Year", "Record Count"])
                 
-                fig = px.bar(
-                    records_df,
-                    x="Year",
-                    y="Record Count",
-                    title="Total Records by Year",
-                    text="Record Count"
-                )
-                fig.update_traces(texttemplate='%{text}', textposition='outside')
-                st.plotly_chart(fig, use_container_width=True)
+            #     fig = px.bar(
+            #         records_df,
+            #         x="Year",
+            #         y="Record Count",
+            #         title="Total Records by Year",
+            #         text="Record Count"
+            #     )
+            #     fig.update_traces(texttemplate='%{text}', textposition='outside')
+            #     st.plotly_chart(fig, use_container_width=True)
 
             with tab4:
+                methods = []
+                if "defect_matching_results_rule" in st.session_state:
+                    methods.append("Rule Based")
+                if "defect_matching_results_siamese" in st.session_state:
+                    methods.append("Siamese")
+
+                if not methods:
+                    st.info("Please run at least one defect matching method in Tab 3 first.")
+                    st.stop()
+
+                selected_method = st.selectbox("Select defect matching method:", methods)
+
+                if selected_method == "Rule Based":
+                    matched_df, unmatched_df = st.session_state["defect_matching_results_rule"]
+                elif selected_method == "Siamese":
+                    matched_df, unmatched_df = st.session_state["defect_matching_results_siamese"]
+
                 # Sub menu linear corrosion rate and future depth prediction
                 with st.expander("Linear Corrosion Rate & Future Depth Prediction", expanded=False):
                     st.write("This section applies a linear corrosion rate model, assuming a constant rate of wall loss between two inspection years, to estimate future depth and remaining life.")
 
-                    if (
-                        'defect_matching_results' in st.session_state
-                        and st.session_state.defect_matching_results is not None
-                    ):
-                        matched_df, unmatched_df = st.session_state.defect_matching_results
+                    # Ask user for pipe thickness
+                    pipe_thickness = st.number_input(
+                        "Enter pipe wall thickness (in mm):",
+                        min_value=0.1,
+                        value=12.7,
+                        step=0.1
+                    )
 
-                        # Ask user for pipe thickness
-                        pipe_thickness = st.number_input(
-                            "Enter pipe wall thickness (in mm):",
-                            min_value=0.1,
-                            value=12.7,
-                            step=0.1
-                        )
+                    # Ensure required columns exist and are numeric
+                    for col in ["Depth1", "Depth2"]:
+                        if col not in matched_df.columns:
+                            st.warning("Matched defects must include depth columns (Depth1, Depth2).")
+                            st.stop()
+                        # Fill missing/blank values with 1 and convert to numeric
+                        matched_df[col] = matched_df[col].replace(["", " "], 1).fillna(1)
+                        matched_df[col] = pd.to_numeric(matched_df[col], errors="coerce").fillna(1)
 
-                        # Ensure required columns exist and are numeric
-                        for col in ["Depth1", "Depth2"]:
-                            if col not in matched_df.columns:
-                                st.warning("Matched defects must include depth columns (Depth1, Depth2).")
-                                st.stop()
-                            # Fill missing/blank values with 1 and convert to numeric
-                            matched_df[col] = matched_df[col].replace(["", " "], 1).fillna(1)
-                            matched_df[col] = pd.to_numeric(matched_df[col], errors="coerce").fillna(1)
+                    matched_df["Year1"] = pd.to_numeric(matched_df["Year1"], errors="coerce")
+                    matched_df["Year2"] = pd.to_numeric(matched_df["Year2"], errors="coerce")
 
-                        matched_df["Year1"] = pd.to_numeric(matched_df["Year1"], errors="coerce")
-                        matched_df["Year2"] = pd.to_numeric(matched_df["Year2"], errors="coerce")
+                    # Convert depth % to mm using user-supplied pipe thickness
+                    matched_df["Depth1_mm"] = (matched_df["Depth1"] / 100) * pipe_thickness
+                    matched_df["Depth2_mm"] = (matched_df["Depth2"] / 100) * pipe_thickness
 
-                        # Convert depth % to mm using user-supplied pipe thickness
-                        matched_df["Depth1_mm"] = (matched_df["Depth1"] / 100) * pipe_thickness
-                        matched_df["Depth2_mm"] = (matched_df["Depth2"] / 100) * pipe_thickness
+                    # Exclude negative corrosion rate data points
+                    neg_rate_mask = matched_df["Depth2_mm"] >= matched_df["Depth1_mm"]
+                    excluded_linear = matched_df[~neg_rate_mask].copy()
+                    matched_df = matched_df[neg_rate_mask].copy().reset_index(drop=True)
 
+                    if matched_df.empty:
+                        st.warning("All matched defects were excluded due to negative corrosion rate (Depth2 < Depth1). Linear and ML corrosion rate calculations are skipped, but Burst Pressure and Thinning analyses are still available below.")
+                    
+                    else:
                         # Calculate corrosion rate (mm/year)
                         matched_df["Corrosion_Rate_mm_per_year"] = (
                             (matched_df["Depth2_mm"] - matched_df["Depth1_mm"]) /
@@ -1314,6 +1485,7 @@ if uploaded_files:
                             ],
                             use_container_width=True
                         )
+                        
 
                         # Predict future corrosion depth
                         future_year = st.number_input(
@@ -1367,125 +1539,125 @@ if uploaded_files:
                             mime="text/csv"
                         )
 
-                    else:
-                        st.info("Run defect matching first to enable corrosion rate analysis.")
-
                 
                 # Submenu Machine Learning Corrosion Prediction
                 with st.expander("Machine Learning Corrosion Prediction", expanded=False):
                     st.write("This section uses a Random Forest regression model to predict future corrosion depth in mm based on matched defect features.")
 
-                    if (
-                        'defect_matching_results' in st.session_state
-                        and st.session_state.defect_matching_results is not None
-                    ):
-                        matched_df, _ = st.session_state.defect_matching_results
+                    # Ensure required columns
+                    required_cols = ["Year1", "Year2", "Depth1", "Depth2", "Width1", "Length1"]
+                    for col in required_cols:
+                        if col not in matched_df.columns:
+                            st.warning(f"Missing required column: {col}")
+                            st.stop()
+                        matched_df[col] = pd.to_numeric(matched_df[col], errors="coerce")
 
-                        # Ensure required columns
-                        required_cols = ["Year1", "Year2", "Depth1", "Depth2", "Width1", "Length1"]
-                        for col in required_cols:
-                            if col not in matched_df.columns:
-                                st.warning(f"Missing required column: {col}")
-                                st.stop()
-                            matched_df[col] = pd.to_numeric(matched_df[col], errors="coerce")
+                    # Handle missing Depth1 and Depth2
+                    matched_df["Depth1"].fillna(1, inplace=True)
+                    matched_df["Depth2"].fillna(1, inplace=True)
 
-                        # Handle missing Depth1 and Depth2
-                        matched_df["Depth1"].fillna(1, inplace=True)
-                        matched_df["Depth2"].fillna(1, inplace=True)
+                    # User pipe thickness (mm)
+                    pipe_thickness = st.number_input("Pipe Wall Thickness (mm)", min_value=1.0, value=12.7, step=0.1)
 
-                        # User pipe thickness (mm)
-                        pipe_thickness = st.number_input("Pipe Wall Thickness (mm)", min_value=1.0, value=12.7, step=0.1)
+                    # Convert depth from percent to mm
+                    #matched_df["Depth1_mm"] = (matched_df["Depth1"] / 100.0) * pipe_thickness
+                    #matched_df["Depth2_mm"] = (matched_df["Depth2"] / 100.0) * pipe_thickness
 
-                        # Convert depth from percent to mm
-                        #matched_df["Depth1_mm"] = (matched_df["Depth1"] / 100.0) * pipe_thickness
-                        #matched_df["Depth2_mm"] = (matched_df["Depth2"] / 100.0) * pipe_thickness
+                    # Feature engineering
+                    matched_df["Years_Elapsed"] = matched_df["Year2"] - matched_df["Year1"]
+                    features = ["Depth1_mm", "Width1", "Length1", "Years_Elapsed"]
+                    X = matched_df[features].dropna()
+                    y = matched_df.loc[X.index, "Depth2_mm"].dropna()
 
-                        # Feature engineering
-                        matched_df["Years_Elapsed"] = matched_df["Year2"] - matched_df["Year1"]
-                        features = ["Depth1_mm", "Width1", "Length1", "Years_Elapsed"]
-                        X = matched_df[features].dropna()
-                        y = matched_df.loc[X.index, "Depth2_mm"]
+                    if matched_df.empty:
+                        st.warning("All matched defects were excluded due to negative corrosion rate (Depth2 < Depth1). Linear and ML corrosion rate calculations are skipped, but Burst Pressure and Thinning analyses are still available below.")
+                    
+                    else:
 
                         if len(X) < 10:
                             st.info("Not enough data for ML training. At least 10 records required.")
-                            st.stop()
+                        
+                        else:
 
-                        # Train/test split
-                        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-                        rf = RandomForestRegressor(n_estimators=100, random_state=42)
-                        rf.fit(X_train, y_train)
-                        y_pred = rf.predict(X_test)
+                            # Train/test split
+                            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
-                        st.write(f"**MAE:** {mean_absolute_error(y_test, y_pred):.3f} mm | **R²:** {r2_score(y_test, y_pred):.3f}")
+                            # Hyperparameter tuning
+                            param_grid = {
+                                'n_estimators': [50, 100, 200],
+                                'max_depth': [None, 5, 10, 20],
+                                'min_samples_split': [2, 5, 10],
+                                'min_samples_leaf': [1, 2, 4],
+                                'max_features': ['auto', 'sqrt']
+                            }
+                            
+                            best_rf, y_pred, best_params = run_ml_corrosion_prediction(X_train, y_train, X_test, param_grid)
 
-                        # Future year prediction
-                        future_year = st.number_input(
-                            "Predict corrosion depth for year (ML):",
-                            min_value=int(matched_df["Year2"].max()) + 1,
-                            value=int(matched_df["Year2"].max()) + 5,
-                            step=1,
-                        )
+                            st.write(f"**Best Hyperparameters:** {best_params}")
+                            st.write(f"**Tuned MAE:** {mean_absolute_error(y_test, y_pred):.3f} mm | **Tuned R²:** {r2_score(y_test, y_pred):.3f}")
 
-                        pred_X = matched_df[["Depth1_mm", "Width1", "Length1", "Year1"]].copy()
-                        pred_X["Years_Elapsed"] = future_year - pred_X["Year1"]
-                        pred_X = pred_X[["Depth1_mm", "Width1", "Length1", "Years_Elapsed"]]
+                            # Future year prediction
+                            future_year = st.number_input(
+                                "Predict corrosion depth for year (ML):",
+                                min_value=int(matched_df["Year2"].max()) + 1,
+                                value=int(matched_df["Year2"].max()) + 5,
+                                step=1,
+                            )
 
-                        pred_depth_mm = rf.predict(pred_X)
-                        matched_df["ML_Predicted_Depth_mm"] = pred_depth_mm
+                            pred_X = matched_df[["Depth1_mm", "Width1", "Length1", "Year1"]].copy()
+                            pred_X["Years_Elapsed"] = future_year - pred_X["Year1"]
+                            pred_X = pred_X[["Depth1_mm", "Width1", "Length1", "Years_Elapsed"]]
 
-                        # Calculate corrosion rate and remaining life
-                        matched_df["ML_Corrosion_Rate_mm_per_year"] = (matched_df["ML_Predicted_Depth_mm"] - matched_df["Depth1_mm"]) / matched_df["Years_Elapsed"]
-                        matched_df["ML_Remaining_Life_years"] = (pipe_thickness - matched_df["ML_Predicted_Depth_mm"]) / matched_df["ML_Corrosion_Rate_mm_per_year"]
-                        matched_df["ML_Remaining_Life_years"] = matched_df["ML_Remaining_Life_years"].apply(lambda x: max(x, 0))  # cap negatives
+                            pred_depth_mm = best_rf.predict(pred_X)
+                            matched_df["ML_Predicted_Depth_mm"] = pred_depth_mm
 
-                        # Show output
-                        st.subheader(f"Predicted Corrosion Depths for {future_year} (mm)")
-                        st.dataframe(
-                            matched_df[["Year2", "Depth2", "Depth2_mm", "ML_Predicted_Depth_mm", "ML_Corrosion_Rate_mm_per_year", "ML_Remaining_Life_years"]],
-                            use_container_width=True
-                        )
+                            # Calculate corrosion rate and remaining life
+                            matched_df["ML_Corrosion_Rate_mm_per_year"] = (matched_df["ML_Predicted_Depth_mm"] - matched_df["Depth1_mm"]) / matched_df["Years_Elapsed"]
+                            matched_df["ML_Remaining_Life_years"] = (pipe_thickness - matched_df["ML_Predicted_Depth_mm"]) / matched_df["ML_Corrosion_Rate_mm_per_year"]
+                            matched_df["ML_Remaining_Life_years"] = matched_df["ML_Remaining_Life_years"].apply(lambda x: max(x, 0))  # cap negatives
 
-                        # Plot
-                        st.subheader("ML Predicted Depth Distribution (mm)")
-                        st.bar_chart(matched_df["ML_Predicted_Depth_mm"].dropna())
+                            # Show output
+                            st.subheader(f"Predicted Corrosion Depths for {future_year} (mm)")
+                            st.dataframe(
+                                matched_df[["Year2", "Depth2", "Depth2_mm", "ML_Predicted_Depth_mm", "ML_Corrosion_Rate_mm_per_year", "ML_Remaining_Life_years"]],
+                                use_container_width=True
+                            )
 
-                        # Show minimum remaining life
-                        if not matched_df["ML_Remaining_Life_years"].dropna().empty:
-                            valid_life = matched_df[matched_df["ML_Remaining_Life_years"] > 0]["ML_Remaining_Life_years"]
-                            if not valid_life.empty:
-                                st.metric("Minimum Remaining Life (ML)", f"{valid_life.min():.2f} years")
+                            # Plot
+                            st.subheader("ML Predicted Depth Distribution (mm)")
+                            st.bar_chart(matched_df["ML_Predicted_Depth_mm"].dropna())
 
-                        # Download
-                        st.download_button(
-                            label="Download ML Corrosion Prediction Report (CSV)",
-                            data=matched_df.to_csv(index=False),
-                            file_name="ml_corrosion_prediction_report.csv",
-                            mime="text/csv"
-                        )
-                    else:
-                        st.info("Run defect matching first to enable ML corrosion prediction.")
+                            # Show minimum remaining life
+                            if not matched_df["ML_Remaining_Life_years"].dropna().empty:
+                                valid_life = matched_df[matched_df["ML_Remaining_Life_years"] > 0]["ML_Remaining_Life_years"]
+                                if not valid_life.empty:
+                                    st.metric("Minimum Remaining Life (ML)", f"{valid_life.min():.2f} years")
+
+                            # Download
+                            st.download_button(
+                                label="Download ML Corrosion Prediction Report (CSV)",
+                                data=matched_df.to_csv(index=False),
+                                file_name="ml_corrosion_prediction_report.csv",
+                                mime="text/csv"
+                            )
                 
                 # Sub menu: Burst Pressure CGA
                 with st.expander("Burst Pressure CGA", expanded=False):
                     st.write("This section estimates remaining life based on predicted corrosion growth and API 579 burst pressure assessment.")
 
-                    if (
-                        'defect_matching_results' in st.session_state
-                        and st.session_state.defect_matching_results is not None
-                    ):
-                        matched_df, _ = st.session_state.defect_matching_results
-
-                        required_cols = ["Length2", "Width2", "Depth2"]
-                        for col in required_cols:
-                            if col not in matched_df.columns:
-                                st.warning(f"Missing required column: {col}")
-                                st.stop()
-                            matched_df[col] = pd.to_numeric(matched_df[col], errors="coerce")
-
-                        df = matched_df.dropna(subset=required_cols).copy()
-                        if df.empty:
-                            st.warning("No valid defect records found.")
+                    required_cols = ["Length2", "Width2", "Depth2"]
+                    for col in required_cols:
+                        if col not in matched_df.columns:
+                            st.warning(f"Missing required column: {col}")
                             st.stop()
+                        matched_df[col] = pd.to_numeric(matched_df[col], errors="coerce")
+
+                    df = matched_df.dropna(subset=required_cols).copy()
+                    
+                    #check when the data too small or empty
+                    if df.empty:
+                        st.warning("No valid defect records found.")
+                    else:
 
                         st.subheader("Pipeline Parameters")
 
@@ -1568,8 +1740,23 @@ if uploaded_files:
                             st.metric("Minimum Remaining Life (Burst Pressure)", f"{df["Remaining_Life"].min():.2f} years")
 
                             st.subheader("Remaining Life Distribution")
-                            fig = px.histogram(df, x="Remaining_Life", nbins=20, title="Remaining Life (years)")
-                            st.plotly_chart(fig, use_container_width=True)
+                            # Bin Remaining Life values
+                            bins = range(0, 55, 5)
+                            labels = [f"{i}-{i+5}" for i in bins[:-1]]
+                            df["Life_Bin"] = pd.cut(df["Remaining_Life"], bins=bins, labels=labels, right=False)
+
+                            # Count frequencies and sort
+                            life_counts = df["Life_Bin"].value_counts().sort_index()
+
+                            # Prepare DataFrame
+                            life_chart_df = pd.DataFrame({
+                                "Remaining Life Bin": life_counts.index.astype(str),
+                                "Count": life_counts.values
+                            }).set_index("Remaining Life Bin")
+
+                            # Show bar chart
+                            st.bar_chart(life_chart_df)
+
 
                             st.session_state.burst_cga_results = df
 
@@ -1582,105 +1769,116 @@ if uploaded_files:
                         else:
                             st.info("Fill in the pipeline parameters above and click the button to begin analysis.")
 
-                    else:
-                        st.info("Run defect matching first to enable CGA analysis.")
-
                 
                 # sub menu thinning mechanism cga
                 with st.expander("Thinning Mechanism CGA", expanded=False):
                     st.write("This section calculates remaining life for each matched defect based on wall thinning, using hoop stress and minimum wall thickness criteria.")
 
-                    if (
-                        'defect_matching_results' in st.session_state
-                        and st.session_state.defect_matching_results is not None
-                    ):
-                        matched_df, _ = st.session_state.defect_matching_results
-                        df = matched_df.copy()
-                        df = df.dropna(subset=["Depth2"])  # Ensure valid data
+                    df = matched_df.copy()
+                    df = df.dropna(subset=["Depth2"])  # Ensure valid data
 
-                        with st.form("thinning_form"):
-                            st.subheader("Pipeline Parameters (Thinning)")
-                            D_mm = st.number_input("Pipe Diameter D (mm)", min_value=100.0, value=inside_diameter_mm, key="thin_d")
-                            t_current_mm = st.number_input("Current Wall Thickness t (mm)", min_value=1.0, value=12.7, key="thin_t")
-                            t_min_mm = st.number_input("Minimum Required Thickness t_min (mm)", min_value=1.0, value=6.35, key="thin_t_min")
-                            P = st.number_input("Operating Pressure P [psi]", min_value=100, value=1000, key="thin_p")
-                            allowable_stress = st.number_input("Allowable Hoop Stress [psi]", min_value=10000, value=20000, key="thin_hoop")
+                    with st.form("thinning_form"):
+                        st.subheader("Pipeline Parameters (Thinning)")
+                        D_mm = st.number_input("Pipe Diameter D (mm)", min_value=100.0, value=inside_diameter_mm, key="thin_d")
+                        t_current_mm = st.number_input("Current Wall Thickness t (mm)", min_value=1.0, value=12.7, key="thin_t")
+                        t_min_mm = st.number_input("Minimum Required Thickness t_min (mm)", min_value=1.0, value=6.35, key="thin_t_min")
+                        P = st.number_input("Operating Pressure P [psi]", min_value=100, value=1000, key="thin_p")
+                        allowable_stress = st.number_input("Allowable Hoop Stress [psi]", min_value=10000, value=20000, key="thin_hoop")
 
-                            st.subheader("Operating Conditions")
-                            temperature = st.number_input("Temperature (°C)", value=80, key="thin_temp")
-                            flow_rate = st.number_input("Flow Rate (m/s)", value=10.0, key="thin_flow")
-                            coating_age = st.slider("Coating Age (years)", min_value=0, max_value=30, value=10, key="thin_coating")
+                        st.subheader("Operating Conditions")
+                        temperature = st.number_input("Temperature (°C)", value=80, key="thin_temp")
+                        flow_rate = st.number_input("Flow Rate (m/s)", value=10.0, key="thin_flow")
+                        coating_age = st.slider("Coating Age (years)", min_value=0, max_value=30, value=10, key="thin_coating")
 
-                            run_thinning = st.form_submit_button("Run Thinning Analysis")
+                        run_thinning = st.form_submit_button("Run Thinning Analysis")
 
-                        if run_thinning:
-                            # Convert to inches
-                            D = D_mm / 25.4
-                            t_current = t_current_mm / 25.4
-                            t_min = t_min_mm / 25.4
+                    if run_thinning:
+                        # Convert to inches
+                        D = D_mm / 25.4
+                        t_current = t_current_mm / 25.4
+                        t_min = t_min_mm / 25.4
 
-                            # Simulate training data and train model
-                            np.random.seed(42)
-                            train_data = pd.DataFrame({
-                                'temp': np.random.normal(80, 10, 500),
-                                'flow_rate': np.random.normal(10, 2, 500),
-                                'coating_age': np.random.randint(0, 20, 500),
-                                'thinning_rate': np.abs(np.random.normal(0.02, 0.005, 500))  # in/year
-                            })
+                        # Simulate training data and train model
+                        np.random.seed(42)
+                        train_data = pd.DataFrame({
+                            'temp': np.random.normal(80, 10, 500),
+                            'flow_rate': np.random.normal(10, 2, 500),
+                            'coating_age': np.random.randint(0, 20, 500),
+                            'thinning_rate': np.abs(np.random.normal(0.02, 0.005, 500))  # in/year
+                        })
 
-                            feature_cols = ['temp', 'flow_rate', 'coating_age']
-                            model = RandomForestRegressor(n_estimators=100, random_state=42)
-                            model.fit(train_data[feature_cols], train_data['thinning_rate'])
+                        feature_cols = ['temp', 'flow_rate', 'coating_age']
+                        model = RandomForestRegressor(n_estimators=100, random_state=42)
+                        model.fit(train_data[feature_cols], train_data['thinning_rate'])
 
-                            # Assign input values per defect
-                            df["temp"] = temperature
-                            df["flow_rate"] = flow_rate
-                            df["coating_age"] = coating_age
+                        # Assign input values per defect
+                        df["temp"] = temperature
+                        df["flow_rate"] = flow_rate
+                        df["coating_age"] = coating_age
 
-                            # Predict thinning rate
-                            X_test = df[feature_cols]
-                            thinning_rate = model.predict(X_test)
-                            thinning_rate = np.clip(thinning_rate, 0.005, 0.05)
+                        # Predict thinning rate
+                        X_test = df[feature_cols]
+                        thinning_rate = model.predict(X_test)
+                        thinning_rate = np.clip(thinning_rate, 0.005, 0.05)
 
-                            # Convert Depth2 to wall loss (mm and inches)
-                            df["Depth2_mm"] = df["Depth2"] * t_current_mm / 100
-                            df["Depth2_in"] = df["Depth2_mm"] / 25.4
+                        # Convert Depth2 to wall loss (mm and inches)
+                        df["Depth2_mm"] = df["Depth2"] * t_current_mm / 100
+                        df["Depth2_in"] = df["Depth2_mm"] / 25.4
 
-                            # Adjust t_current per defect
-                            df["t_current_local"] = t_current - df["Depth2_in"]
-                            df["t_current_local"] = df["t_current_local"].clip(lower=0.01)
+                        # Adjust t_current per defect
+                        df["t_current_local"] = t_current - df["Depth2_in"]
+                        df["t_current_local"] = df["t_current_local"].clip(lower=0.01)
 
-                            # Final thinning calculations
-                            df["Thinning_Rate_in_per_year"] = thinning_rate
-                            df["Remaining_Life_years"] = (df["t_current_local"] - t_min) / thinning_rate
-                            df["Wall_Thickness_EOL"] = df["t_current_local"] - df["Thinning_Rate_in_per_year"] * df["Remaining_Life_years"]
-                            df["Hoop_Stress_EOL_psi"] = (P * D) / (2 * df["Wall_Thickness_EOL"])
-                            df["Hoop_Stress_Exceeded"] = df["Hoop_Stress_EOL_psi"] > allowable_stress
+                        # Final thinning calculations
+                        df["Thinning_Rate_in_per_year"] = thinning_rate
+                        df["Remaining_Life_years"] = (df["t_current_local"] - t_min) / thinning_rate
+                        df["Wall_Thickness_EOL"] = df["t_current_local"] - df["Thinning_Rate_in_per_year"] * df["Remaining_Life_years"]
+                        df["Hoop_Stress_EOL_psi"] = (P * D) / (2 * df["Wall_Thickness_EOL"])
+                        df["Hoop_Stress_Exceeded"] = df["Hoop_Stress_EOL_psi"] > allowable_stress
 
-                            # Display results
-                            st.subheader("Thinning Analysis Results (per defect)")
-                            display_cols = [
-                                "Depth2", "Depth2_mm", "Thinning_Rate_in_per_year", "Remaining_Life_years",
-                                "Wall_Thickness_EOL", "Hoop_Stress_EOL_psi", "Hoop_Stress_Exceeded"
-                            ]
-                            st.dataframe(df[display_cols].round(3), use_container_width=True)
+                        # Display results
+                        st.subheader("Thinning Analysis Results (per defect)")
+                        display_cols = [
+                            "Depth2", "Depth2_mm", "Thinning_Rate_in_per_year", "Remaining_Life_years",
+                            "Wall_Thickness_EOL", "Hoop_Stress_EOL_psi", "Hoop_Stress_Exceeded"
+                        ]
+                        st.dataframe(df[display_cols].round(3), use_container_width=True)
 
-                            st.session_state.thinning_cga_results = df
+                        st.session_state.thinning_cga_results = df
 
-                            # Show minimum remaining life
-                            st.metric("Minimum Remaining Life (Thinning Mechanism)", f"{df["Remaining_Life_years"].min():.2f} years")
+                        # Show minimum remaining life
+                        st.metric("Minimum Remaining Life (Thinning Mechanism)", f"{df["Remaining_Life_years"].min():.2f} years")
 
-                            # Export
-                            st.download_button(
-                                label="Download Thinning CGA Report (CSV)",
-                                data=df[display_cols].to_csv(index=False),
-                                file_name="thinning_cga_per_defect.csv",
-                                mime="text/csv"
-                            )
-                        else:
-                            st.info("Adjust pipeline and operating conditions, then click the button to run thinning analysis.")
+                        # Add these columns for the report
+                        report_cols = [
+                            "Year1", "Year2","Distance1", "Distance2", "Orientation1","Orientation1", "Depth2", "Depth2_mm",
+                            "Pipe_Diameter_mm", "Current_Wall_Thickness_mm", "Minimum_Required_Thickness_mm",
+                            "Operating_Pressure_psi", "Allowable_Hoop_Stress_psi",
+                            "Temperature_C", "Flow_Rate_mps", "Coating_Age_years",
+                            "t_current_local", "Thinning_Rate_in_per_year", "Remaining_Life_years",
+                            "Wall_Thickness_EOL", "Hoop_Stress_EOL_psi", "Hoop_Stress_Exceeded"
+                        ]
+
+                        # Before saving, assign the pipeline/operating variables to each row:
+                        df["Pipe_Diameter_mm"] = D_mm
+                        df["Current_Wall_Thickness_mm"] = t_current_mm
+                        df["Minimum_Required_Thickness_mm"] = t_min_mm
+                        df["Operating_Pressure_psi"] = P
+                        df["Allowable_Hoop_Stress_psi"] = allowable_stress
+                        df["Temperature_C"] = temperature
+                        df["Flow_Rate_mps"] = flow_rate
+                        df["Coating_Age_years"] = coating_age
+
+                        # Download button with all details
+                        st.download_button(
+                            label="Download Detailed Thinning CGA Report (CSV)",
+                            data=df[report_cols].to_csv(index=False),
+                            file_name="thinning_cga_detailed_report.csv",
+                            mime="text/csv"
+                        )
                     else:
-                        st.warning("Defect matching data not found. Please run defect matching first.")
+                        st.info("Adjust pipeline and operating conditions, then click the button to run thinning analysis.")
+
                 # Sub menu: Summary of Minimum Remaining Life
                 with st.expander("Summary of Minimum Remaining Life", expanded=False):
                     st.write("This section summarizes the minimum remaining life predictions from all analysis methods for easy comparison.")
@@ -1693,50 +1891,48 @@ if uploaded_files:
                     }
                     
                     # Check and collect data from Linear Corrosion Rate analysis
-                    if 'defect_matching_results' in st.session_state and st.session_state.defect_matching_results is not None:
-                        matched_df, _ = st.session_state.defect_matching_results
                         
-                        # Linear method
-                        if "Remaining_Years" in matched_df.columns:
-                            valid_life_values = matched_df["Remaining_Years"]
-                            valid_life_values = valid_life_values[valid_life_values > 0]
+                    # Linear method
+                    if "Remaining_Years" in matched_df.columns:
+                        valid_life_values = matched_df["Remaining_Years"]
+                        valid_life_values = valid_life_values[valid_life_values > 0]
+                        
+                        if not valid_life_values.empty:
+                            min_remaining_life = valid_life_values.min()
+                            summary_data["Analysis Method"].append("Linear Corrosion Rate")
+                            summary_data["Minimum Remaining Life (years)"].append(round(min_remaining_life, 2))
                             
-                            if not valid_life_values.empty:
-                                min_remaining_life = valid_life_values.min()
-                                summary_data["Analysis Method"].append("Linear Corrosion Rate")
-                                summary_data["Minimum Remaining Life (years)"].append(round(min_remaining_life, 2))
-                                
-                                # Add status based on remaining life
-                                if min_remaining_life < 5:
-                                    summary_data["Status"].append("Critical")
-                                elif min_remaining_life < 10:
-                                    summary_data["Status"].append("Warning")
-                                else:
-                                    summary_data["Status"].append("Good")
+                            # Add status based on remaining life
+                            if min_remaining_life < 5:
+                                summary_data["Status"].append("Critical")
+                            elif min_remaining_life < 10:
+                                summary_data["Status"].append("Warning")
                             else:
-                                summary_data["Analysis Method"].append("Linear Corrosion Rate")
-                                summary_data["Minimum Remaining Life (years)"].append("N/A")
-                                summary_data["Status"].append("No Data")
-                        
-                        # ML method
-                        if "ML_Remaining_Life_years" in matched_df.columns:
-                            valid_life = matched_df[matched_df["ML_Remaining_Life_years"] > 0]["ML_Remaining_Life_years"]
-                            if not valid_life.empty:
-                                min_ml_life = valid_life.min()
-                                summary_data["Analysis Method"].append("Machine Learning")
-                                summary_data["Minimum Remaining Life (years)"].append(round(min_ml_life, 2))
-                                
-                                # Add status based on remaining life
-                                if min_ml_life < 5:
-                                    summary_data["Status"].append("Critical")
-                                elif min_ml_life < 10:
-                                    summary_data["Status"].append("Warning")
-                                else:
-                                    summary_data["Status"].append("Good")
+                                summary_data["Status"].append("Good")
+                        else:
+                            summary_data["Analysis Method"].append("Linear Corrosion Rate")
+                            summary_data["Minimum Remaining Life (years)"].append("N/A")
+                            summary_data["Status"].append("No Data")
+                    
+                    # ML method
+                    if "ML_Remaining_Life_years" in matched_df.columns:
+                        valid_life = matched_df[matched_df["ML_Remaining_Life_years"] > 0]["ML_Remaining_Life_years"]
+                        if not valid_life.empty:
+                            min_ml_life = valid_life.min()
+                            summary_data["Analysis Method"].append("Machine Learning")
+                            summary_data["Minimum Remaining Life (years)"].append(round(min_ml_life, 2))
+                            
+                            # Add status based on remaining life
+                            if min_ml_life < 5:
+                                summary_data["Status"].append("Critical")
+                            elif min_ml_life < 10:
+                                summary_data["Status"].append("Warning")
                             else:
-                                summary_data["Analysis Method"].append("Machine Learning")
-                                summary_data["Minimum Remaining Life (years)"].append("N/A")
-                                summary_data["Status"].append("No Data")
+                                summary_data["Status"].append("Good")
+                        else:
+                            summary_data["Analysis Method"].append("Machine Learning")
+                            summary_data["Minimum Remaining Life (years)"].append("N/A")
+                            summary_data["Status"].append("No Data")
                     
                     # Burst Pressure CGA results
                     if 'burst_cga_results' in st.session_state and st.session_state.burst_cga_results is not None:
@@ -1826,8 +2022,9 @@ else:
     st.write("""
     This application helps analyze pipe sensor data across different years to:
     - Detect and visualize outliers using machine learning
-    - Compare weld anomalies across years
-    - Perform statistical tests to identify significant changes
+    - Compare weld marking across years
+    - Perform corrosion rate analysis using linear regression and machine learning
+    - Perform Burst Pressure and Thinning Analysis to calculate life time remaining
     - Generate comprehensive visual reports
     
     ### Getting Started
