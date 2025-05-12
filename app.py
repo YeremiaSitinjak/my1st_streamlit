@@ -1524,7 +1524,7 @@ if uploaded_files:
                         matched_df["Predicted_Depth_mm"] = matched_df["Depth2_mm"] + matched_df["Corrosion_Rate_mm_per_year"] * (future_year - matched_df["Year2"])
 
                         # Calculate remaining years until 100% wall loss
-                        matched_df["Remaining_Years"] = (pipe_thickness - matched_df["Depth2_mm"]) / matched_df["Corrosion_Rate_mm_per_year"]
+                        matched_df["Remaining_Years"] = (pipe_thickness - matched_df["Predicted_Depth_mm"]) / matched_df["Corrosion_Rate_mm_per_year"]
                         matched_df["Remaining_Years"] = matched_df["Remaining_Years"].apply(lambda x: round(x, 1) if x > 0 else 0)
 
                         # Show prediction table
