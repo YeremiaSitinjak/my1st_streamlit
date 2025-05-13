@@ -1457,7 +1457,7 @@ if uploaded_files:
 
                     # Ask user for pipe thickness
                     pipe_thickness = st.number_input(
-                        "Enter pipe wall thickness (in mm):",
+                        "Enter pipe wall thickness (mm):",
                         min_value=0.1,
                         value=12.7,
                         step=0.1
@@ -1618,20 +1618,28 @@ if uploaded_files:
                             st.write(f"**Best Hyperparameters:** {best_params}")
                             st.write(f"**Tuned MAE:** {mean_absolute_error(y_test, y_pred):.3f} mm | **Tuned R²:** {r2_score(y_test, y_pred):.3f}")
 
-                            # Future year prediction
+                            # Set a baseline future year (e.g., 5 years ahead)
+                            baseline_year = int(matched_df["Year2"].max()) + 5
+
+                            # Predict only once using baseline future year
+                            baseline_pred_X = matched_df[["Depth1_mm", "Width1", "Length1", "Year1"]].copy()
+                            baseline_pred_X["Years_Elapsed"] = baseline_year - baseline_pred_X["Year1"]
+                            baseline_pred_X = baseline_pred_X[["Depth1_mm", "Width1", "Length1", "Years_Elapsed"]]
+                            baseline_pred_depth = best_rf.predict(baseline_pred_X)
+
+                            # Calculate ML corrosion rate from model
+                            matched_df["ML_Corrosion_Rate_mm_per_year"] = (baseline_pred_depth - matched_df["Depth1_mm"]) / (baseline_year - matched_df["Year1"])
+
+                            # Let user adjust future year
                             future_year = st.number_input(
                                 "Predict corrosion depth for year (ML):",
                                 min_value=int(matched_df["Year2"].max()) + 1,
-                                value=int(matched_df["Year2"].max()) + 5,
+                                value=baseline_year,
                                 step=1,
                             )
 
-                            pred_X = matched_df[["Depth1_mm", "Width1", "Length1", "Year1"]].copy()
-                            pred_X["Years_Elapsed"] = future_year - pred_X["Year1"]
-                            pred_X = pred_X[["Depth1_mm", "Width1", "Length1", "Years_Elapsed"]]
-
-                            pred_depth_mm = best_rf.predict(pred_X)
-                            matched_df["ML_Predicted_Depth_mm"] = pred_depth_mm
+                            # Linearly predict depth for user-selected year
+                            matched_df["ML_Predicted_Depth_mm"] = matched_df["Depth1_mm"] + matched_df["ML_Corrosion_Rate_mm_per_year"] * (future_year - matched_df["Year1"])
 
                             # Calculate corrosion rate and remaining life
                             matched_df["ML_Corrosion_Rate_mm_per_year"] = (matched_df["ML_Predicted_Depth_mm"] - matched_df["Depth1_mm"]) / matched_df["Years_Elapsed"]
@@ -1663,243 +1671,243 @@ if uploaded_files:
                                 mime="text/csv"
                             )
                 
-                # Sub menu: Burst Pressure CGA
-                with st.expander("Burst Pressure CGA", expanded=False):
-                    st.write("This section estimates remaining life based on predicted corrosion growth and API 579 burst pressure assessment.")
+                # # Sub menu: Burst Pressure CGA
+                # with st.expander("Burst Pressure CGA", expanded=False):
+                #     st.write("This section estimates remaining life based on predicted corrosion growth and API 579 burst pressure assessment.")
 
-                    required_cols = ["Length2", "Width2", "Depth2"]
-                    for col in required_cols:
-                        if col not in matched_df.columns:
-                            st.warning(f"Missing required column: {col}")
-                            st.stop()
-                        matched_df[col] = pd.to_numeric(matched_df[col], errors="coerce")
+                #     required_cols = ["Length2", "Width2", "Depth2"]
+                #     for col in required_cols:
+                #         if col not in matched_df.columns:
+                #             st.warning(f"Missing required column: {col}")
+                #             st.stop()
+                #         matched_df[col] = pd.to_numeric(matched_df[col], errors="coerce")
 
-                    df = matched_df.dropna(subset=required_cols).copy()
+                #     df = matched_df.dropna(subset=required_cols).copy()
                     
-                    #check when the data too small or empty
-                    if df.empty:
-                        st.warning("No valid defect records found.")
-                    else:
+                #     #check when the data too small or empty
+                #     if df.empty:
+                #         st.warning("No valid defect records found.")
+                #     else:
 
-                        st.subheader("Pipeline Parameters")
+                #         st.subheader("Pipeline Parameters")
 
-                        # User input for parameters
-                        with st.form("burst_cga_form"):
-                            st.subheader("Pipeline Parameters (Burst Pressure)")
-                            D_mm = st.number_input("Pipe Diameter D (mm)", min_value=100.0, value=inside_diameter_mm, key="burst_d")
-                            t_mm = st.number_input("Wall Thickness t (mm)", min_value=1.0, value=12.7, key="burst_t")
-                            MAOP = st.number_input("Maximum Allowable Operating Pressure (MAOP) [psi]", min_value=100, value=1000, key="burst_maop")
-                            SMYS = st.number_input("Specified Minimum Yield Strength (SMYS) [psi]", min_value=10000, value=52000, key="burst_sm")
-                            safety_factor = st.number_input("Safety Factor", min_value=1.0, max_value=2.0, value=1.1, step=0.05, key="burst_sf")
+                #         # User input for parameters
+                #         with st.form("burst_cga_form"):
+                #             st.subheader("Pipeline Parameters (Burst Pressure)")
+                #             D_mm = st.number_input("Pipe Diameter D (mm)", min_value=100.0, value=inside_diameter_mm, key="burst_d")
+                #             t_mm = st.number_input("Wall Thickness t (mm)", min_value=1.0, value=12.7, key="burst_t")
+                #             MAOP = st.number_input("Maximum Allowable Operating Pressure (MAOP) [psi]", min_value=100, value=1000, key="burst_maop")
+                #             SMYS = st.number_input("Specified Minimum Yield Strength (SMYS) [psi]", min_value=10000, value=52000, key="burst_sm")
+                #             safety_factor = st.number_input("Safety Factor", min_value=1.0, max_value=2.0, value=1.1, step=0.05, key="burst_sf")
 
-                            run_cga = st.form_submit_button("Run Burst Pressure Analysis")
+                #             run_cga = st.form_submit_button("Run Burst Pressure Analysis")
 
-                        if run_cga:
-                            # Convert D and t to inches
-                            D = D_mm / 25.4
-                            t = t_mm / 25.4
+                #         if run_cga:
+                #             # Convert D and t to inches
+                #             D = D_mm / 25.4
+                #             t = t_mm / 25.4
 
-                            # Convert depth from percent to mm
-                            df["Depth2_mm"] = df["Depth2"] * t_mm / 100
+                #             # Convert depth from percent to mm
+                #             df["Depth2_mm"] = df["Depth2"] * t_mm / 100
 
-                            # Feature engineering
-                            df["aspect_ratio"] = df["Length2"] / df["Width2"]
-                            df["volumetric_loss"] = df["Length2"] * df["Width2"] * df["Depth2_mm"]
-                            df["depth_ratio"] = df["Depth2_mm"] / t_mm
-                            df["pressure"] = 50  # Placeholder
-                            df["coating_age"] = np.random.randint(0, 20, len(df))
+                #             # Feature engineering
+                #             df["aspect_ratio"] = df["Length2"] / df["Width2"]
+                #             df["volumetric_loss"] = df["Length2"] * df["Width2"] * df["Depth2_mm"]
+                #             df["depth_ratio"] = df["Depth2_mm"] / t_mm
+                #             df["pressure"] = 50  # Placeholder
+                #             df["coating_age"] = np.random.randint(0, 20, len(df))
 
-                            # Model growth rate (simulated target)
-                            feature_cols = ["Length2", "Width2", "Depth2_mm", "pressure", "coating_age",
-                                            "aspect_ratio", "volumetric_loss", "depth_ratio"]
-                            X = df[feature_cols]
-                            y = np.abs(np.random.normal(0.2, 0.05, len(df)))  # Simulated growth
+                #             # Model growth rate (simulated target)
+                #             feature_cols = ["Length2", "Width2", "Depth2_mm", "pressure", "coating_age",
+                #                             "aspect_ratio", "volumetric_loss", "depth_ratio"]
+                #             X = df[feature_cols]
+                #             y = np.abs(np.random.normal(0.2, 0.05, len(df)))  # Simulated growth
 
-                            model = RandomForestRegressor(n_estimators=100, random_state=42)
-                            model.fit(X, y)
-                            growth_pred = model.predict(X)
+                #             model = RandomForestRegressor(n_estimators=100, random_state=42)
+                #             model.fit(X, y)
+                #             growth_pred = model.predict(X)
 
-                            # Clamp predicted growth to realistic range
-                            growth_pred = np.clip(growth_pred, 0.05, 1.5)  # mm/year
+                #             # Clamp predicted growth to realistic range
+                #             growth_pred = np.clip(growth_pred, 0.05, 1.5)  # mm/year
 
-                            # API 579 burst pressure formula
-                            def api_579_burst_pressure(d_in, t_in, D_in, SMYS_psi):
-                                M = np.sqrt(1 + 0.8 * (d_in / t_in)**2)
-                                Pf = (2 * SMYS_psi * t_in / D_in) * ((1 - 0.85 * d_in / t_in) / (1 - 0.85 * d_in / t_in / M))
-                                return Pf
+                #             # API 579 burst pressure formula
+                #             def api_579_burst_pressure(d_in, t_in, D_in, SMYS_psi):
+                #                 M = np.sqrt(1 + 0.8 * (d_in / t_in)**2)
+                #                 Pf = (2 * SMYS_psi * t_in / D_in) * ((1 - 0.85 * d_in / t_in) / (1 - 0.85 * d_in / t_in / M))
+                #                 return Pf
 
-                            # Remaining life simulation
-                            remaining_lives = []
-                            for idx, row in df.iterrows():
-                                current_depth_mm = row["Depth2_mm"]
-                                growth_rate_mm = growth_pred[idx]
-                                life = 50  # max years
+                #             # Remaining life simulation
+                #             remaining_lives = []
+                #             for idx, row in df.iterrows():
+                #                 current_depth_mm = row["Depth2_mm"]
+                #                 growth_rate_mm = growth_pred[idx]
+                #                 life = 50  # max years
 
-                                for year in range(1, 51):
-                                    depth_mm = current_depth_mm + growth_rate_mm * year
-                                    depth_in = depth_mm / 25.4
-                                    Pf = api_579_burst_pressure(depth_in, t, D, SMYS)
-                                    if Pf <= safety_factor * MAOP:
-                                        life = year
-                                        break
+                #                 for year in range(1, 51):
+                #                     depth_mm = current_depth_mm + growth_rate_mm * year
+                #                     depth_in = depth_mm / 25.4
+                #                     Pf = api_579_burst_pressure(depth_in, t, D, SMYS)
+                #                     if Pf <= safety_factor * MAOP:
+                #                         life = year
+                #                         break
 
-                                remaining_lives.append(life)
+                #                 remaining_lives.append(life)
 
-                            df["Predicted_Growth_Rate"] = growth_pred
-                            df["Remaining_Life"] = remaining_lives
+                #             df["Predicted_Growth_Rate"] = growth_pred
+                #             df["Remaining_Life"] = remaining_lives
 
-                            st.subheader("Remaining Life Prediction (API 579)")
-                            st.caption("Note: Depth2 was converted from percent to mm using wall thickness.")
-                            st.dataframe(df[["Depth2_mm", "Predicted_Growth_Rate", "Remaining_Life"]]
-                                        .rename(columns={
-                                            "Depth2_mm": "Depth2 (mm)",
-                                            "Predicted_Growth_Rate": "Growth Rate (mm/yr)",
-                                            "Remaining_Life": "Remaining Life (yrs)"
-                                        }),
-                                        use_container_width=True)
+                #             st.subheader("Remaining Life Prediction (API 579)")
+                #             st.caption("Note: Depth2 was converted from percent to mm using wall thickness.")
+                #             st.dataframe(df[["Depth2_mm", "Predicted_Growth_Rate", "Remaining_Life"]]
+                #                         .rename(columns={
+                #                             "Depth2_mm": "Depth2 (mm)",
+                #                             "Predicted_Growth_Rate": "Growth Rate (mm/yr)",
+                #                             "Remaining_Life": "Remaining Life (yrs)"
+                #                         }),
+                #                         use_container_width=True)
                             
-                            # Show minimum remaining life
-                            st.metric("Minimum Remaining Life (Burst Pressure)", f"{df["Remaining_Life"].min():.2f} years")
+                #             # Show minimum remaining life
+                #             st.metric("Minimum Remaining Life (Burst Pressure)", f"{df["Remaining_Life"].min():.2f} years")
 
-                            st.subheader("Remaining Life Distribution")
-                            # Bin Remaining Life values
-                            bins = range(0, 55, 5)
-                            labels = [f"{i}-{i+5}" for i in bins[:-1]]
-                            df["Life_Bin"] = pd.cut(df["Remaining_Life"], bins=bins, labels=labels, right=False)
+                #             st.subheader("Remaining Life Distribution")
+                #             # Bin Remaining Life values
+                #             bins = range(0, 55, 5)
+                #             labels = [f"{i}-{i+5}" for i in bins[:-1]]
+                #             df["Life_Bin"] = pd.cut(df["Remaining_Life"], bins=bins, labels=labels, right=False)
 
-                            # Count frequencies and sort
-                            life_counts = df["Life_Bin"].value_counts().sort_index()
+                #             # Count frequencies and sort
+                #             life_counts = df["Life_Bin"].value_counts().sort_index()
 
-                            # Prepare DataFrame
-                            life_chart_df = pd.DataFrame({
-                                "Remaining Life Bin": life_counts.index.astype(str),
-                                "Count": life_counts.values
-                            }).set_index("Remaining Life Bin")
+                #             # Prepare DataFrame
+                #             life_chart_df = pd.DataFrame({
+                #                 "Remaining Life Bin": life_counts.index.astype(str),
+                #                 "Count": life_counts.values
+                #             }).set_index("Remaining Life Bin")
 
-                            # Show bar chart
-                            st.bar_chart(life_chart_df)
+                #             # Show bar chart
+                #             st.bar_chart(life_chart_df)
 
 
-                            st.session_state.burst_cga_results = df
+                #             st.session_state.burst_cga_results = df
 
-                            st.download_button(
-                                label="Download Burst Pressure CGA Report (CSV)",
-                                data=df.to_csv(index=False),
-                                file_name="burst_pressure_cga_report.csv",
-                                mime="text/csv"
-                            )
-                        else:
-                            st.info("Fill in the pipeline parameters above and click the button to begin analysis.")
+                #             st.download_button(
+                #                 label="Download Burst Pressure CGA Report (CSV)",
+                #                 data=df.to_csv(index=False),
+                #                 file_name="burst_pressure_cga_report.csv",
+                #                 mime="text/csv"
+                #             )
+                #         else:
+                #             st.info("Fill in the pipeline parameters above and click the button to begin analysis.")
 
                 
-                # sub menu thinning mechanism cga
-                with st.expander("Thinning Mechanism CGA", expanded=False):
-                    st.write("This section calculates remaining life for each matched defect based on wall thinning, using hoop stress and minimum wall thickness criteria.")
+                # # sub menu thinning mechanism cga
+                # with st.expander("Thinning Mechanism CGA", expanded=False):
+                #     st.write("This section calculates remaining life for each matched defect based on wall thinning, using hoop stress and minimum wall thickness criteria.")
 
-                    df = matched_df.copy()
-                    df = df.dropna(subset=["Depth2"])  # Ensure valid data
+                #     df = matched_df.copy()
+                #     df = df.dropna(subset=["Depth2"])  # Ensure valid data
 
-                    with st.form("thinning_form"):
-                        st.subheader("Pipeline Parameters (Thinning)")
-                        D_mm = st.number_input("Pipe Diameter D (mm)", min_value=100.0, value=inside_diameter_mm, key="thin_d")
-                        t_current_mm = st.number_input("Current Wall Thickness t (mm)", min_value=1.0, value=12.7, key="thin_t")
-                        t_min_mm = st.number_input("Minimum Required Thickness t_min (mm)", min_value=1.0, value=6.35, key="thin_t_min")
-                        P = st.number_input("Operating Pressure P [psi]", min_value=100, value=1000, key="thin_p")
-                        allowable_stress = st.number_input("Allowable Hoop Stress [psi]", min_value=10000, value=20000, key="thin_hoop")
+                #     with st.form("thinning_form"):
+                #         st.subheader("Pipeline Parameters (Thinning)")
+                #         D_mm = st.number_input("Pipe Diameter D (mm)", min_value=100.0, value=inside_diameter_mm, key="thin_d")
+                #         t_current_mm = st.number_input("Current Wall Thickness t (mm)", min_value=1.0, value=12.7, key="thin_t")
+                #         t_min_mm = st.number_input("Minimum Required Thickness t_min (mm)", min_value=1.0, value=6.35, key="thin_t_min")
+                #         P = st.number_input("Operating Pressure P [psi]", min_value=100, value=1000, key="thin_p")
+                #         allowable_stress = st.number_input("Allowable Hoop Stress [psi]", min_value=10000, value=20000, key="thin_hoop")
 
-                        st.subheader("Operating Conditions")
-                        temperature = st.number_input("Temperature (°C)", value=80, key="thin_temp")
-                        flow_rate = st.number_input("Flow Rate (m/s)", value=10.0, key="thin_flow")
-                        coating_age = st.slider("Coating Age (years)", min_value=0, max_value=30, value=10, key="thin_coating")
+                #         st.subheader("Operating Conditions")
+                #         temperature = st.number_input("Temperature (°C)", value=80, key="thin_temp")
+                #         flow_rate = st.number_input("Flow Rate (m/s)", value=10.0, key="thin_flow")
+                #         coating_age = st.slider("Coating Age (years)", min_value=0, max_value=30, value=10, key="thin_coating")
 
-                        run_thinning = st.form_submit_button("Run Thinning Analysis")
+                #         run_thinning = st.form_submit_button("Run Thinning Analysis")
 
-                    if run_thinning:
-                        # Convert to inches
-                        D = D_mm / 25.4
-                        t_current = t_current_mm / 25.4
-                        t_min = t_min_mm / 25.4
+                #     if run_thinning:
+                #         # Convert to inches
+                #         D = D_mm / 25.4
+                #         t_current = t_current_mm / 25.4
+                #         t_min = t_min_mm / 25.4
 
-                        # Simulate training data and train model
-                        np.random.seed(42)
-                        train_data = pd.DataFrame({
-                            'temp': np.random.normal(80, 10, 500),
-                            'flow_rate': np.random.normal(10, 2, 500),
-                            'coating_age': np.random.randint(0, 20, 500),
-                            'thinning_rate': np.abs(np.random.normal(0.02, 0.005, 500))  # in/year
-                        })
+                #         # Simulate training data and train model
+                #         np.random.seed(42)
+                #         train_data = pd.DataFrame({
+                #             'temp': np.random.normal(80, 10, 500),
+                #             'flow_rate': np.random.normal(10, 2, 500),
+                #             'coating_age': np.random.randint(0, 20, 500),
+                #             'thinning_rate': np.abs(np.random.normal(0.02, 0.005, 500))  # in/year
+                #         })
 
-                        feature_cols = ['temp', 'flow_rate', 'coating_age']
-                        model = RandomForestRegressor(n_estimators=100, random_state=42)
-                        model.fit(train_data[feature_cols], train_data['thinning_rate'])
+                #         feature_cols = ['temp', 'flow_rate', 'coating_age']
+                #         model = RandomForestRegressor(n_estimators=100, random_state=42)
+                #         model.fit(train_data[feature_cols], train_data['thinning_rate'])
 
-                        # Assign input values per defect
-                        df["temp"] = temperature
-                        df["flow_rate"] = flow_rate
-                        df["coating_age"] = coating_age
+                #         # Assign input values per defect
+                #         df["temp"] = temperature
+                #         df["flow_rate"] = flow_rate
+                #         df["coating_age"] = coating_age
 
-                        # Predict thinning rate
-                        X_test = df[feature_cols]
-                        thinning_rate = model.predict(X_test)
-                        thinning_rate = np.clip(thinning_rate, 0.005, 0.05)
+                #         # Predict thinning rate
+                #         X_test = df[feature_cols]
+                #         thinning_rate = model.predict(X_test)
+                #         thinning_rate = np.clip(thinning_rate, 0.005, 0.05)
 
-                        # Convert Depth2 to wall loss (mm and inches)
-                        df["Depth2_mm"] = df["Depth2"] * t_current_mm / 100
-                        df["Depth2_in"] = df["Depth2_mm"] / 25.4
+                #         # Convert Depth2 to wall loss (mm and inches)
+                #         df["Depth2_mm"] = df["Depth2"] * t_current_mm / 100
+                #         df["Depth2_in"] = df["Depth2_mm"] / 25.4
 
-                        # Adjust t_current per defect
-                        df["t_current_local"] = t_current - df["Depth2_in"]
-                        df["t_current_local"] = df["t_current_local"].clip(lower=0.01)
+                #         # Adjust t_current per defect
+                #         df["t_current_local"] = t_current - df["Depth2_in"]
+                #         df["t_current_local"] = df["t_current_local"].clip(lower=0.01)
 
-                        # Final thinning calculations
-                        df["Thinning_Rate_in_per_year"] = thinning_rate
-                        df["Remaining_Life_years"] = (df["t_current_local"] - t_min) / thinning_rate
-                        df["Wall_Thickness_EOL"] = df["t_current_local"] - df["Thinning_Rate_in_per_year"] * df["Remaining_Life_years"]
-                        df["Hoop_Stress_EOL_psi"] = (P * D) / (2 * df["Wall_Thickness_EOL"])
-                        df["Hoop_Stress_Exceeded"] = df["Hoop_Stress_EOL_psi"] > allowable_stress
+                #         # Final thinning calculations
+                #         df["Thinning_Rate_in_per_year"] = thinning_rate
+                #         df["Remaining_Life_years"] = (df["t_current_local"] - t_min) / thinning_rate
+                #         df["Wall_Thickness_EOL"] = df["t_current_local"] - df["Thinning_Rate_in_per_year"] * df["Remaining_Life_years"]
+                #         df["Hoop_Stress_EOL_psi"] = (P * D) / (2 * df["Wall_Thickness_EOL"])
+                #         df["Hoop_Stress_Exceeded"] = df["Hoop_Stress_EOL_psi"] > allowable_stress
 
-                        # Display results
-                        st.subheader("Thinning Analysis Results (per defect)")
-                        display_cols = [
-                            "Depth2", "Depth2_mm", "Thinning_Rate_in_per_year", "Remaining_Life_years",
-                            "Wall_Thickness_EOL", "Hoop_Stress_EOL_psi", "Hoop_Stress_Exceeded"
-                        ]
-                        st.dataframe(df[display_cols].round(3), use_container_width=True)
+                #         # Display results
+                #         st.subheader("Thinning Analysis Results (per defect)")
+                #         display_cols = [
+                #             "Depth2", "Depth2_mm", "Thinning_Rate_in_per_year", "Remaining_Life_years",
+                #             "Wall_Thickness_EOL", "Hoop_Stress_EOL_psi", "Hoop_Stress_Exceeded"
+                #         ]
+                #         st.dataframe(df[display_cols].round(3), use_container_width=True)
 
-                        st.session_state.thinning_cga_results = df
+                #         st.session_state.thinning_cga_results = df
 
-                        # Show minimum remaining life
-                        st.metric("Minimum Remaining Life (Thinning Mechanism)", f"{df["Remaining_Life_years"].min():.2f} years")
+                #         # Show minimum remaining life
+                #         st.metric("Minimum Remaining Life (Thinning Mechanism)", f"{df["Remaining_Life_years"].min():.2f} years")
 
-                        # Add these columns for the report
-                        report_cols = [
-                            "Year1", "Year2","Distance1", "Distance2", "Orientation1","Orientation1", "Depth2", "Depth2_mm",
-                            "Pipe_Diameter_mm", "Current_Wall_Thickness_mm", "Minimum_Required_Thickness_mm",
-                            "Operating_Pressure_psi", "Allowable_Hoop_Stress_psi",
-                            "Temperature_C", "Flow_Rate_mps", "Coating_Age_years",
-                            "t_current_local", "Thinning_Rate_in_per_year", "Remaining_Life_years",
-                            "Wall_Thickness_EOL", "Hoop_Stress_EOL_psi", "Hoop_Stress_Exceeded"
-                        ]
+                #         # Add these columns for the report
+                #         report_cols = [
+                #             "Year1", "Year2","Distance1", "Distance2", "Orientation1","Orientation1", "Depth2", "Depth2_mm",
+                #             "Pipe_Diameter_mm", "Current_Wall_Thickness_mm", "Minimum_Required_Thickness_mm",
+                #             "Operating_Pressure_psi", "Allowable_Hoop_Stress_psi",
+                #             "Temperature_C", "Flow_Rate_mps", "Coating_Age_years",
+                #             "t_current_local", "Thinning_Rate_in_per_year", "Remaining_Life_years",
+                #             "Wall_Thickness_EOL", "Hoop_Stress_EOL_psi", "Hoop_Stress_Exceeded"
+                #         ]
 
-                        # Before saving, assign the pipeline/operating variables to each row:
-                        df["Pipe_Diameter_mm"] = D_mm
-                        df["Current_Wall_Thickness_mm"] = t_current_mm
-                        df["Minimum_Required_Thickness_mm"] = t_min_mm
-                        df["Operating_Pressure_psi"] = P
-                        df["Allowable_Hoop_Stress_psi"] = allowable_stress
-                        df["Temperature_C"] = temperature
-                        df["Flow_Rate_mps"] = flow_rate
-                        df["Coating_Age_years"] = coating_age
+                #         # Before saving, assign the pipeline/operating variables to each row:
+                #         df["Pipe_Diameter_mm"] = D_mm
+                #         df["Current_Wall_Thickness_mm"] = t_current_mm
+                #         df["Minimum_Required_Thickness_mm"] = t_min_mm
+                #         df["Operating_Pressure_psi"] = P
+                #         df["Allowable_Hoop_Stress_psi"] = allowable_stress
+                #         df["Temperature_C"] = temperature
+                #         df["Flow_Rate_mps"] = flow_rate
+                #         df["Coating_Age_years"] = coating_age
 
-                        # Download button with all details
-                        st.download_button(
-                            label="Download Detailed Thinning CGA Report (CSV)",
-                            data=df[report_cols].to_csv(index=False),
-                            file_name="thinning_cga_detailed_report.csv",
-                            mime="text/csv"
-                        )
-                    else:
-                        st.info("Adjust pipeline and operating conditions, then click the button to run thinning analysis.")
+                #         # Download button with all details
+                #         st.download_button(
+                #             label="Download Detailed Thinning CGA Report (CSV)",
+                #             data=df[report_cols].to_csv(index=False),
+                #             file_name="thinning_cga_detailed_report.csv",
+                #             mime="text/csv"
+                #         )
+                #     else:
+                #         st.info("Adjust pipeline and operating conditions, then click the button to run thinning analysis.")
 
                 # Sub menu: Summary of Minimum Remaining Life
                 with st.expander("Summary of Minimum Remaining Life", expanded=False):
