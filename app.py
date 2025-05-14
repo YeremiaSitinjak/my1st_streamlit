@@ -14,8 +14,8 @@ from sklearn.neighbors import NearestNeighbors
 from scipy import stats
 import matplotlib.pyplot as plt
 from matplotlib.collections import PatchCollection
-from matplotlib.patches import Rectangle
-from sklearn.model_selection import train_test_split
+import matplotlib.patches as patches
+from sklearn.model_selection import train_test_split,RandomizedSearchCV
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import GridSearchCV
 
@@ -494,11 +494,18 @@ def detect_outliers_by_segment(historical_data, segments, contamination=None):
 @st.cache_data
 def run_ml_corrosion_prediction(X_train, y_train, X_test, param_grid):
     rf = RandomForestRegressor(random_state=42)
-    grid_search = GridSearchCV(rf, param_grid, cv=5, scoring='r2', n_jobs=-1)
-    grid_search.fit(X_train, y_train)
-    best_rf = grid_search.best_estimator_
+    random_search = RandomizedSearchCV(
+    rf, param_distributions=param_grid, 
+    n_iter=20,  # try 20 combinations
+    cv=3,       # reduce to 3-fold to speed up
+    scoring='r2',
+    random_state=42,
+    n_jobs=-1
+)
+    random_search.fit(X_train, y_train)
+    best_rf = random_search.best_estimator_
     y_pred = best_rf.predict(X_test)
-    return best_rf, y_pred, grid_search.best_params_
+    return best_rf, y_pred, random_search.best_params_
 
 #cache run rule based defect matching
 @st.cache_data
@@ -1137,11 +1144,49 @@ if uploaded_files:
 
                                 # st.plotly_chart(fig, use_container_width=True)
 
+                                # Create figure and axes
+                                fig, ax = plt.subplots(figsize=(12, 8))
+
+                                # Plot all boxes (unmatched: light red, matched: green)
+                                for idx, row in all_anomalies.iterrows():
+                                    length_m = row["length [mm]"] / 1000
+                                    width_deg = mm_to_deg(row["width [mm]"], inside_diameter_mm)
+                                    x0 = row["log distance [m]"] - length_m / 2
+                                    y0 = row["clock orientation"] - width_deg / 2
+                                    is_matched = (matched_df["Index1"] == idx).any() or (matched_df["Index2"] == idx).any()
+
+                                    color = "green" if is_matched else "red"
+                                    alpha = 0.5 if is_matched else 0.4
+
+                                    rect = patches.Rectangle(
+                                        (x0, y0), length_m, width_deg,
+                                        linewidth=1, edgecolor=color, facecolor=color, alpha=alpha
+                                    )
+                                    ax.add_patch(rect)
+
+                                # Set labels and title
+                                ax.set_title("All Years Defect Matching")
+                                ax.set_xlabel("Log Distance (m)")
+                                ax.set_ylabel("Clock Orientation (deg)")
+                                ax.grid(True)
+
+                                # Create custom legends
+                                matched_patch = patches.Patch(color="green", alpha=0.5, label="Matched Defect")
+                                unmatched_patch = patches.Patch(color="red", alpha=0.4, label="Unmatched Defect")
+                                ax.legend(handles=[matched_patch, unmatched_patch])
+
+                                # Adjust axes
+                                ax.set_xlim(all_anomalies["log distance [m]"].min() - 1, all_anomalies["log distance [m]"].max() + 1)
+                                ax.set_ylim(0, 360)
+
+                                # Display in Streamlit
+                                st.pyplot(fig)
+
                                 # Table of matched defects
                                 st.subheader("Matched Defects Table")
                                 if not matched_df.empty:
                                     # Show only first 10 columns for clarity
-                                    display_cols = ["Year1", "Distance1", "Orientation1", "Width1", "Length1", "Year2", "Distance2", "Orientation2", "Width2", "Length2"]
+                                    display_cols = ["Year1", "Distance1", "Orientation1", "Width1", "Length1","Depth1", "Year2", "Distance2", "Orientation2", "Width2", "Length2","Depth2"]
                                     st.dataframe(matched_df[display_cols], use_container_width=True)
 
                                     # Normalize both DataFrames to have consistent columns
@@ -1606,11 +1651,11 @@ if uploaded_files:
 
                             # Hyperparameter tuning
                             param_grid = {
-                                'n_estimators': [50, 100, 200],
-                                'max_depth': [None, 5, 10, 20],
-                                'min_samples_split': [2, 5, 10],
-                                'min_samples_leaf': [1, 2, 4],
-                                'max_features': ['auto', 'sqrt']
+                                'n_estimators': [100, 150],
+                                'max_depth': [5, 10, 15],
+                                'min_samples_split': [2, 5],
+                                'min_samples_leaf': [1, 2],
+                                'max_features': [None, 'sqrt']
                             }
                             
                             best_rf, y_pred, best_params = run_ml_corrosion_prediction(X_train, y_train, X_test, param_grid)
