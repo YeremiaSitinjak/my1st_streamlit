@@ -583,7 +583,7 @@ def plot_segment_scatter(combined_df, year, segment=None):
     st.plotly_chart(fig, use_container_width=True,key=f"segment_distribution_plot_allyears")
 
 # Streamlit App UI with improved layout
-st.title("🔍 Inline Inspection Data Matching & Prediction")
+st.title("✨ Inline Inspection Data Matching & Prediction")
 
 # Create sidebar for controls
 with st.sidebar:
@@ -617,7 +617,7 @@ with st.sidebar:
         "Inside Diameter (mm)", 
         min_value=1.0, 
         max_value=5000.0, 
-        value=900.0,  # default value
+        value=304.8,  # default value
         step=1.0,
         help="Enter the pipe's inside diameter in millimeters. Used for converting width [mm] to degrees."
     )
@@ -1063,6 +1063,7 @@ if uploaded_files:
                                 for year, df in st.session_state.historical_data.items():
                                     anomalies = df[df["component/anomaly type"].str.contains("anomaly", case=False, na=False)].copy()
                                     anomalies["Year"] = year
+                                    anomalies["Original_Index"] = anomalies.index
                                     all_anomalies.append(anomalies)
                                 if not all_anomalies:
                                     st.warning("No anomalies found in the uploaded data.")
@@ -1090,7 +1091,13 @@ if uploaded_files:
                                 #     x1 = row["log distance [m]"] + length_m / 2
                                 #     y0 = row["clock orientation"] - width_deg / 2
                                 #     y1 = row["clock orientation"] + width_deg / 2
-                                #     is_matched = (matched_df["Index1"] == idx).any() or (matched_df["Index2"] == idx).any()
+                                #     original_idx = row["Original_Index"]
+                                #     year = row["Year"]
+                                #     is_matched = (
+                                #         ((matched_df["Index1"] == original_idx) & (matched_df["Year1"] == year)).any()
+                                #         or
+                                #         ((matched_df["Index2"] == original_idx) & (matched_df["Year2"] == year)).any()
+                                #     )
                                 #     fillcolor = "rgba(44,160,44,0.5)" if is_matched else "rgba(255,99,71,0.4)"
                                 #     fig.add_shape(
                                 #         type="rect",
@@ -1109,7 +1116,7 @@ if uploaded_files:
                                 #         f"Depth: {row.get('depth [%]', 'N/A')}%<br>"
                                 #         f"Match: {'Yes' if is_matched else 'No'}"
                                 #     )
-                                #     fig.add_trace(go.Scatter(
+                                #     fig.add_trace(go.Scattergl(
                                 #         x=[row["log distance [m]"]],
                                 #         y=[row["clock orientation"]],
                                 #         mode="markers",
@@ -1120,13 +1127,13 @@ if uploaded_files:
                                 #     ))
 
                                 # # Legend
-                                # fig.add_trace(go.Scatter(
+                                # fig.add_trace(go.Scattergl(
                                 #     x=[None], y=[None],
                                 #     mode='markers',
                                 #     marker=dict(color="rgba(44,160,44,0.5)", size=15, symbol='square'),
                                 #     name="Matched Defect"
                                 # ))
-                                # fig.add_trace(go.Scatter(
+                                # fig.add_trace(go.Scattergl(
                                 #     x=[None], y=[None],
                                 #     mode='markers',
                                 #     marker=dict(color="rgba(255,99,71,0.4)", size=15, symbol='square'),
@@ -1144,7 +1151,7 @@ if uploaded_files:
 
                                 # st.plotly_chart(fig, use_container_width=True)
 
-                                # Create figure and axes
+                                # Create figure static plot
                                 fig, ax = plt.subplots(figsize=(12, 8))
 
                                 # Plot all boxes (unmatched: light red, matched: green)
@@ -1153,10 +1160,16 @@ if uploaded_files:
                                     width_deg = mm_to_deg(row["width [mm]"], inside_diameter_mm)
                                     x0 = row["log distance [m]"] - length_m / 2
                                     y0 = row["clock orientation"] - width_deg / 2
-                                    is_matched = (matched_df["Index1"] == idx).any() or (matched_df["Index2"] == idx).any()
+                                    original_idx = row["Original_Index"]
+                                    year = row["Year"]
+                                    is_matched = (
+                                        ((matched_df["Index1"] == original_idx) & (matched_df["Year1"] == year)).any()
+                                        or
+                                        ((matched_df["Index2"] == original_idx) & (matched_df["Year2"] == year)).any()
+                                    )
 
                                     color = "green" if is_matched else "red"
-                                    alpha = 0.5 if is_matched else 0.4
+                                    alpha = 0.7 if is_matched else 0.2
 
                                     rect = patches.Rectangle(
                                         (x0, y0), length_m, width_deg,
@@ -1171,8 +1184,8 @@ if uploaded_files:
                                 ax.grid(True)
 
                                 # Create custom legends
-                                matched_patch = patches.Patch(color="green", alpha=0.5, label="Matched Defect")
-                                unmatched_patch = patches.Patch(color="red", alpha=0.4, label="Unmatched Defect")
+                                matched_patch = patches.Patch(color="#00CC00", alpha=0.5, label="Matched Defect")
+                                unmatched_patch = patches.Patch(color="#FF9999", alpha=0.2, label="Unmatched Defect")
                                 ax.legend(handles=[matched_patch, unmatched_patch])
 
                                 # Adjust axes
