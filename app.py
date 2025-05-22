@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import seaborn as sns
 import os
 import io
-import datetime
+from datetime import datetime
 import time
 import plotly.express as px
 import plotly.graph_objects as go
@@ -646,11 +647,12 @@ if uploaded_files:
                 st.session_state.historical_data = historical_data
         
         # Create tabs for different analyses
-        tab1, tab2, tab3, tab4= st.tabs([
+        tab1, tab2, tab3, tab4, tab5= st.tabs([
             "📊 Overview",
             "🔧 Data Analysis", 
             "🔎 ILI Data Matching", 
             "🛡️ ILI Corrosion Rate & Prediction",
+            "💡 RBI"
             #"📈 Statistical Tests",
         ])
         
@@ -1611,6 +1613,10 @@ if uploaded_files:
                         st.subheader(f"Predicted Depth Distribution in {future_year} (mm)")
                         st.bar_chart(matched_df["Predicted_Depth_mm"].dropna())
 
+                        # Save linear prediction data for RBI tab
+                        matched_df["Standard_Remaining_Years"] = matched_df["Remaining_Years"]
+                        st.session_state.linear_prediction_df = matched_df.copy()
+
                         # Download
                         st.download_button(
                             label="Download Corrosion Rate & Prediction Report (CSV)",
@@ -1720,6 +1726,10 @@ if uploaded_files:
                                 valid_life = matched_df[matched_df["ML_Remaining_Life_years"] > 0]["ML_Remaining_Life_years"]
                                 if not valid_life.empty:
                                     st.metric("Minimum Remaining Life (ML)", f"{valid_life.min():.2f} years")
+
+                            # Save ML prediction result for RBI tab
+                            matched_df["Standard_Remaining_Years"] = matched_df["ML_Remaining_Life_years"]
+                            st.session_state.ml_prediction_df = matched_df.copy()
 
                             # Download
                             st.download_button(
@@ -2096,6 +2106,144 @@ if uploaded_files:
                         )
                     else:
                         st.info("Run at least one analysis method to generate a minimum remaining life summary.")
+
+            with tab5:
+                st.title("RBI - Risk Based Inspection")
+
+                # Step 1: Select prediction source
+                prediction_source = st.selectbox(
+                    "Select corrosion prediction source:",
+                    ["Linear Corrosion Rate", "Machine Learning (Random Forest)"]
+                )
+
+                # Step 2: Load predicted data
+                if prediction_source == "Linear Corrosion Rate":
+                    df = st.session_state.get("linear_prediction_df")
+                    if df is not None and "Remaining_Years" in df.columns:
+                        df["Standard_Remaining_Years"] = df["Remaining_Years"]
+                        df["Standard_Corrosion_Rate_mm_per_year"] = df["Corrosion_Rate_mm_per_year"]
+                    else:
+                        st.error("Missing required columns in linear prediction data.")
+                        st.stop()
+                else:
+                    df = st.session_state.get("ml_prediction_df")
+                    if df is not None and "ML_Remaining_Life_years" in df.columns:
+                        df["Standard_Remaining_Years"] = df["ML_Remaining_Life_years"]
+                        df["Standard_Corrosion_Rate_mm_per_year"] = df["ML_Corrosion_Rate_mm_per_year"]
+                    else:
+                        st.error("Missing required columns in ML prediction data.")
+                        st.stop()
+
+                # Step 3: Filter where Depth2 > 10%
+                df = df[df["Depth2"] > 10]
+                if df.empty:
+                    st.warning("No defects with Depth2 > 10% found.")
+                    st.stop()
+
+                # Step 4: Consequence of Failure
+                st.subheader("Consequence of Failure (CoF)")
+                consequence_level = st.selectbox("Select consequence category:", ["Low", "Medium", "High"])
+                df["CoF"] = consequence_level
+
+                # Step 5: Probability of Failure (PoF)
+                def calculate_pof(remaining_years):
+                    if remaining_years < 2:
+                        return "High"
+                    elif remaining_years < 5:
+                        return "Medium"
+                    else:
+                        return "Low"
+
+                df["PoF"] = df["Standard_Remaining_Years"].apply(calculate_pof)
+
+                # Step 6: Risk Level
+                def calculate_risk(pof, cof):
+                    risk_matrix = {
+                        ("High", "High"): "High", ("High", "Medium"): "High", ("High", "Low"): "Medium",
+                        ("Medium", "High"): "High", ("Medium", "Medium"): "Medium", ("Medium", "Low"): "Low",
+                        ("Low", "High"): "Medium", ("Low", "Medium"): "Low", ("Low", "Low"): "Low"
+                    }
+                    return risk_matrix.get((pof, cof), "Unknown")
+
+                df["Risk_Level"] = df.apply(lambda row: calculate_risk(row["PoF"], row["CoF"]), axis=1)
+
+                # Step 7: RBI Table
+                st.subheader("RBI Assessment Table")
+                st.dataframe(
+                    df[["Distance2", "Depth2", "Depth2_mm", "Standard_Corrosion_Rate_mm_per_year", 
+                        "Standard_Remaining_Years", "PoF", "CoF", "Risk_Level"]],
+                    use_container_width=True
+                )
+
+                # Step 8: DF Projection Settings
+                st.subheader("Damage Factor Projection (per weld log distance)")
+                df_baseline = st.number_input("Initial Damage Factor", min_value=0.00001, value=0.00001, step=0.00001, format="%.8f")
+                df_target = st.number_input("Damage Factor Target", min_value=0.00001, value=0.0001, step=0.00001, format="%.8f")
+                growth_model = st.selectbox("Damage Growth Model", ["Linear", "Exponential"])
+
+                # Projection range
+                projection_years = 20
+                current_year = datetime.now().year
+                years = np.arange(current_year, current_year + projection_years + 1)
+
+                # Step 9: DF Chart per Distance2
+                # Get unique distances from filtered data
+                available_distances = sorted(df["Distance2"].unique())
+
+                selected_distance = st.selectbox("Select weld log distance to view DF chart:", available_distances)
+
+                # Filter data for selected distance
+                selected_group = df[df["Distance2"] == selected_distance]
+
+                # Compute average corrosion rate
+                corrosion_rate = selected_group["Standard_Corrosion_Rate_mm_per_year"].mean(skipna=True)
+
+                if pd.isna(corrosion_rate) or corrosion_rate <= 0:
+                    st.warning(f"Invalid corrosion rate for distance {selected_distance} m.")
+                else:
+                    # DF growth calculation
+                    df_growth = []
+                    for t in range(len(years)):
+                        if growth_model == "Exponential":
+                            df_val = df_baseline * np.exp(corrosion_rate * t)
+                        else:
+                            df_val = df_baseline + corrosion_rate * t
+                        df_growth.append(df_val)
+
+                    df_plan = [df_baseline] * len(years)
+                    df_target_line = [df_target] * len(years)
+
+                    fig, ax = plt.subplots()
+                    ax.plot(years, df_growth, label="DF Projection", color='orange', marker='o')
+                    ax.plot(years, df_plan, label="DF Plan", linestyle='--', color='blue')
+                    ax.plot(years, df_target_line, label="DF Target", linestyle='--', color='gray')
+
+                    # Annotate when DF crosses target
+                    for i, val in enumerate(df_growth):
+                        if val > df_target:
+                            ax.annotate(f"{val:.5f}", (years[i], val), textcoords="offset points", xytext=(0, 10), ha='center')
+                            ax.axvline(x=years[i], color='red', linestyle='--')
+                            break
+
+                    ax.set_title(f"Damage Factor Chart - Distance {selected_distance} m")
+                    ax.set_xlabel("Year")
+                    ax.set_ylabel("Damage Factor")
+                    ax.set_xticks(years)
+                    ax.set_xticklabels([str(y) for y in years], rotation=45, ha='right')
+                    ax.grid(True)
+                    ax.legend()
+                    st.pyplot(fig)
+
+
+                # Step 10: Download button
+                st.download_button(
+                    label="📥 Download RBI Assessment CSV",
+                    data=df.to_csv(index=False),
+                    file_name="rbi_risk_assessment.csv",
+                    mime="text/csv"
+                )
+
+
 
 
         else:
