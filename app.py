@@ -2,8 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
-from datetime import datetime
-import time
+from datetime import datetime, time
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -62,13 +61,13 @@ def convert_clock_orientation(val):
     try:
         if isinstance(val, str):
             val = val.strip()
-            if ":" in val:  # Example: "3:00", "6:30"
+            if ":" in val:
                 hours, minutes = map(int, val.split(":"))
-                return (hours % 12) * 30 + (minutes / 60) * 30  # Convert to degrees
-        elif isinstance(val, pd.Timestamp) or isinstance(val, datetime.time):
-            return (val.hour % 12) * 30 + (val.minute / 60) * 30  # Convert time to degrees
+                return (hours % 12) * 30 + (minutes / 60) * 30
+        elif isinstance(val, (pd.Timestamp, time)):
+            return (val.hour % 12) * 30 + (val.minute / 60) * 30
         elif isinstance(val, (int, float)):
-            return val  # Already in degrees
+            return val
         return np.nan
     except Exception as e:
         st.error(f"Error converting clock orientation: {e}")
