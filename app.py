@@ -46,7 +46,7 @@ def inject_custom_styles():
         /* === Moving Gradient Background === */
         html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {
             height: 100%;
-            background: linear-gradient(-45deg, #f0f4f8, #e6f0ff, #f5f7fa, #e3ecf3);
+            background: linear-gradient(-45deg, #d4fc79, #96e6a1, #ffecd2, #fcb69f);
             background-size: 300% 300%;
             animation: gradientBG 25s ease infinite;
         }
