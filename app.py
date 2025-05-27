@@ -1284,7 +1284,7 @@ if uploaded_files:
 
                     # 4. Apply custom weight to log distance to prioritize proximity
                     st.markdown("**Log Distance Influence**  \n1 = Data can be matched even if they are farther apart  \n10 = Matched data must be physically close")
-                    distance_weight = st.slider("", 1.0, 10.0, 5.0, 0.5)
+                    distance_weight = st.slider("Log Distance Influence", 1.0, 10.0, 5.0, 0.5,label_visibility="collapsed")
                     all_anomalies_norm["log distance [m]"] *= distance_weight
 
                     st.markdown("---")
@@ -1294,7 +1294,7 @@ if uploaded_files:
                     unmatched_indices = set(all_anomalies_norm.index)
                     years = sorted(all_anomalies_norm["Year"].unique())
                     st.markdown("**Siamese Similarity**  \n0.10 = Very Strict (only nearly identical data are matched)  \n5.00 = Very Generous (large differences allowed)")
-                    distance_threshold = st.slider("", 0.1, 5.0, 1.0, 0.1)
+                    distance_threshold = st.slider("Siamese Similarity", 0.1, 5.0, 1.0, 0.1,label_visibility="collapsed")
 
                     for i, year in enumerate(years[:-1]):
                         df1 = all_anomalies_norm[all_anomalies_norm["Year"] == year]
@@ -1636,8 +1636,8 @@ if uploaded_files:
                         matched_df[col] = pd.to_numeric(matched_df[col], errors="coerce")
 
                     # Handle missing Depth1 and Depth2
-                    matched_df["Depth1"].fillna(1, inplace=True)
-                    matched_df["Depth2"].fillna(1, inplace=True)
+                    matched_df["Depth1"] = matched_df["Depth1"].fillna(1)
+                    matched_df["Depth2"] = matched_df["Depth2"].fillna(1)
 
                     # User pipe thickness (mm)
                     pipe_thickness = st.number_input("Pipe Wall Thickness (mm)", min_value=1.0, value=12.7, step=0.1)
@@ -2132,7 +2132,7 @@ if uploaded_files:
                         st.stop()
 
                 # Step 3: Filter where Depth2 > 10%
-                df = df[df["Depth2"] > 10]
+                df = df[df["Depth2"] > 10].copy()
                 if df.empty:
                     st.warning("No defects with Depth2 > 10% found.")
                     st.stop()
