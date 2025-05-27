@@ -39,6 +39,94 @@ if "run_global_isolation" not in st.session_state:
 # Set page configuration
 st.set_page_config(layout="wide", page_title="Pipe Sensor Analysis", page_icon="🔍")
 
+def inject_custom_styles():
+    st.markdown(
+        """
+        <style>
+        /* === Moving Gradient Background === */
+        html, body, [data-testid="stAppViewContainer"], [data-testid="stApp"] {
+            height: 100%;
+            background: linear-gradient(-45deg, #f0f4f8, #e6f0ff, #f5f7fa, #e3ecf3);
+            background-size: 300% 300%;
+            animation: gradientBG 25s ease infinite;
+        }
+
+        @keyframes gradientBG {
+            0% {background-position: 0% 50%;}
+            50% {background-position: 100% 50%;}
+            100% {background-position: 0% 50%;}
+        }
+
+        /* === App Container Styling === */
+        .stApp {
+            background-color: rgba(255, 255, 255, 0.88) !important;
+            border-radius: 12px;
+            padding: 1rem;
+        }
+
+        /* === Top Header Styling === */
+        [data-testid="stHeader"] {
+            background-color: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(6px);
+        }
+        [data-testid="stHeader"] * {
+            color: #333 !important;
+        }
+
+        /* === Sidebar Styling === */
+        [data-testid="stSidebar"] {
+            background: linear-gradient(to bottom, #f7f9fc, #ffffff);
+            border-right: 1px solid #e0e0e0;
+            font-family: "Segoe UI", sans-serif;
+        }
+
+        /* === Scrollbar Styling === */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background-color: #ccc;
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #999;
+        }
+
+        /* === Button Hover === */
+        button[kind="primary"] {
+            transition: 0.3s ease all;
+        }
+        button[kind="primary"]:hover {
+            transform: scale(1.03);
+            background-color: #4a90e2 !important;
+        }
+
+        /* === Header Font Styling === */
+        h1, h2, h3 {
+            font-family: 'Segoe UI', sans-serif;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+        }
+
+        /* === Main Content Elevation === */
+        section.main > div {
+            background-color: rgba(255,255,255,0.94);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+inject_custom_styles()
+
+
 # Apply caching to data preprocessing for better performance
 @st.cache_data
 def preprocess_data(df):
