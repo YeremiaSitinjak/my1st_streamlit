@@ -73,11 +73,16 @@ def inject_custom_styles():
             color: #333 !important;
         }
 
-        /* === Sidebar Styling === */
-        [data-testid="stSidebar"] {
-            background: linear-gradient(to bottom, #f7f9fc, #ffffff);
-            border-right: 1px solid #e0e0e0;
-            font-family: "Segoe UI", sans-serif;
+        section[data-testid="stSidebar"] {
+            background: rgba(255, 255, 255, 0.92);
+            padding: 1.5rem 1rem;
+            border-radius: 16px;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+            margin: 20px;
+        }
+        section[data-testid="stSidebar"] .block-container {
+            padding-top: 0rem;
+            padding-bottom: 0rem;
         }
 
         /* === Scrollbar Styling === */
